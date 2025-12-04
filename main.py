@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends
 from connection.db_connection import Base, engine, SessionLocal
 from wsh.cadastro.products import products_rp
+from wsh.consulta.consultasgerais import consults_rp
 from wsh.movimento.romaneio import moviment_rp
 from wsh.user.login import login_rp
 
@@ -13,6 +14,8 @@ app = FastAPI()
 app.include_router(login_rp, prefix="", tags=["Login"])
 app.include_router(products_rp, prefix="", tags=["products"])
 app.include_router(moviment_rp, prefix="", tags=["moviments"])
+app.include_router(consults_rp, prefix="", tags=["consults"])
+
 
 
 

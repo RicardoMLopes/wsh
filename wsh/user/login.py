@@ -29,7 +29,7 @@ def login(dados: LoginSchema, db: Session = Depends(get_db)):
     print("senha =", dados.senha)
 
     query = text("""
-        SELECT id, users, newpassword
+        SELECT id, users, newpassword, usertype
         FROM caduser
         WHERE users = :users
         LIMIT 1
@@ -45,7 +45,34 @@ def login(dados: LoginSchema, db: Session = Depends(get_db)):
 
     return {
         "msg": "Usuário localizado",
-        "usuario_id": result.id,
+        "id": result.id,
         "users": result.users,
-        "newpassword": result.newpassword
+        "newpassword": result.newpassword,
+        "usertype": result.usertype
     }
+@login_rp.get("/usuarios/list")
+def listar_usuarios(db: Session = Depends(get_db)):
+    conn = db.connection().connection
+    cursor = conn.cursor()
+    usuarios = []
+
+    try:
+        sql = """
+            SELECT id, users, usertype
+            FROM caduser
+            WHERE situationregistration <> 'E'
+            ORDER BY users
+        """
+        cursor.execute(sql)
+        for row in cursor.fetchall():
+            usuarios.append({
+                "id": row[0],
+                "users": row[1],
+                "usertype": row[2]
+            })
+    finally:
+        cursor.close()
+        conn.close()
+
+    return {"status": "ok", "usuarios": usuarios}
+
