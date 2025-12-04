@@ -497,3 +497,96 @@ def atribuir_operador(
 
     return {"status": "ok", "resultados": resultados}
 
+#================================================================================================
+#                    GRAVAR O MOVIMENTO
+#------------------------------------------------------------------------------------------------
+class MovimentoPutaway(BaseModel):
+    id: int
+    pn: str
+    reference: str
+    waybill: str
+    descricao: str
+    posicao: str
+    classe: str
+    quantidade_revisada: float
+    volume: int
+    operador_id: str
+    usuario_id: str
+    avaria: bool = False
+    multipla_etiqueta: bool = False
+
+
+@moviment_rp.post("/movimento/putaway")
+def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
+    conn = db.connection().connection
+    cursor = conn.cursor()
+    try:
+        # Se id > 0, atualiza registro existente
+        if mov.id > 0:
+            sql_update = f"""
+                UPDATE whsproductsputaway SET
+                    Print = 'F',
+                    typeprint = 'N',
+                    RevisedQty = RevisedQty + {mov.quantidade_revisada},
+                    User_Id = CONCAT(User_Id, '{mov.usuario_id},'),
+                    StandardQty = StandardQty,
+                    LPSQty = LPSQty,
+                    UndeclaredSQty = UndeclaredSQty,
+                    RevisedVolume = {mov.volume},
+                    Description = '{mov.descricao}',
+                    Position = '{mov.posicao}',
+                    siccode = '{mov.classe}',
+                    situationregistration = 'A',
+                    dateregistration = CURRENT_TIMESTAMP
+                WHERE ID = {mov.id} AND Reference = '{mov.reference}' 
+                  AND Waybill = '{mov.waybill}' AND PN = '{mov.pn}'
+            """
+            cursor.execute(sql_update)
+            conn.commit()
+        else:
+
+            sql_insert = f"""
+                INSERT INTO whsproductsputaway
+                (PN, Description, Position, Qty, datecreate, operator_id,
+                 Print, typeprint, RevisedQty, User_Id, StandardQty, LPSQty,
+                 UndeclaredSQty, RevisedVolume, Reference, Waybill, DateProcessStart,
+                 situationregistration, dateregistration)
+                VALUES (
+                    '{mov.pn}', '{mov.descricao}', '{mov.posicao}', 0, CURRENT_TIMESTAMP, '{mov.operador_id}',
+                    'F', 'F', {mov.quantidade_revisada}, '{mov.usuario_id},', 0, 0, {mov.quantidade_revisada},
+                    {mov.volume}, '{mov.reference}', '{mov.waybill}', CURRENT_TIMESTAMP, 'I', CURRENT_TIMESTAMP
+                )
+            """
+            logger.info(f"INSERT whsproductsputaway: {sql_insert}")
+            cursor.execute(sql_insert)
+            conn.commit()
+
+            # Recupera o ID gerado automaticamente
+            mov.id = cursor.lastrowid
+
+            # Sempre insere no log
+            sql_log = f"""
+                INSERT INTO whsproductsputawaylog
+                (Id_whsprod, Reference, Waybill, PN, Description, Position, siccode,
+                 Qty, operator_id, processlines, datecreate, Print, typeprint, User_Id,
+                 RevisedQty, RevisedVolume, releasedQty, DateProcessStart,
+                 StandardQty, LPSQty, UndeclaredSQty, situationregistration, dateregistration)
+                VALUES (
+                    {mov.id}, '{mov.reference}', '{mov.waybill}', '{mov.pn}', '{mov.descricao}', '{mov.posicao}', '{mov.classe}',
+                    {mov.quantidade_revisada}, '{mov.operador_id}', 0, CURRENT_TIMESTAMP, 'F', 'N',
+                    '{mov.usuario_id}', {mov.quantidade_revisada}, {mov.volume}, {mov.quantidade_revisada},
+                    CURRENT_TIMESTAMP, 0, 0, {mov.quantidade_revisada}, 'I', CURRENT_TIMESTAMP
+                )
+            """
+            cursor.execute(sql_log)
+            conn.commit()
+
+        return {"status": "ok", "mensagem": "Movimento registrado com sucesso", "id": mov.id}
+
+    except Exception as e:
+        conn.rollback()
+        return {"status": "erro", "mensagem": str(e)}
+    finally:
+        cursor.close()
+        conn.close()
+

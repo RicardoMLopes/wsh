@@ -85,6 +85,8 @@ def consulta_item(
             """
             cursor.execute(sql_totais)
             row = cursor.fetchone()
+
+            logger.info(f"totais: {row}")
             if row:
                 resultado["totais"] = {
                     "standardqty": row[0],
