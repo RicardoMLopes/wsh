@@ -1,10 +1,11 @@
 from fastapi import Depends, APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Optional
 from typing import List
 from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
 from datetime import datetime
-import logging, time
+import logging
 
 
 moviment_rp = APIRouter()
@@ -500,93 +501,406 @@ def atribuir_operador(
 #================================================================================================
 #                    GRAVAR O MOVIMENTO
 #------------------------------------------------------------------------------------------------
+
+logger = logging.getLogger("movimento_putaway")
+
 class MovimentoPutaway(BaseModel):
-    id: int
+    id: int = Field(0)
     pn: str
     reference: str
     waybill: str
-    descricao: str
-    posicao: str
-    classe: str
-    quantidade_revisada: float
-    volume: int
-    operador_id: str
-    usuario_id: str
-    avaria: bool = False
-    multipla_etiqueta: bool = False
+    descricao: Optional[str] = ''
+    posicao: Optional[str] = ''
+    classe: Optional[str] = ''
+    quantidade_revisada: float = 0.0
+    volume: int = 0
+    operador_id: Optional[str] = ''
+    usuario_id: Optional[str] = ''
+    avaria: Optional[bool] = False
+    multipla_etiqueta: Optional[bool] = False
+
+    # Campos opcionais que vinham da UI / Cells no Delphi (para preencher o LOG)
+    lbl_qtd_total: Optional[float] = None
+    grn1: Optional[str] = None
+    processlines: Optional[int] = None
+    processdate: Optional[str] = None  # string no formato esperado (se enviado)
+    grn3: Optional[str] = None
+    aaf: Optional[str] = None
+    rnc: Optional[str] = None
+    # campo que pode conter a data preenchida para DateProcessStart (equivalente a Cells[10,linha])
+    cells_dateprocessstart: Optional[str] = None
 
 
 @moviment_rp.post("/movimento/putaway")
 def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
+    """
+    Rota mov. putaway traduzida do Delphi.
+    - Mantém comportamento do Delphi (calculo etiquetas, acumulo User_Id no registro principal)
+    - Usa autoincrement (cursor.lastrowid) para INSERT principal
+    - Grava LOG sempre (após UPDATE ou INSERT)
+    - whsproductsputawaylog.User_Id recebe apenas usuario atual (numérico)
+    """
+    logger.info(">>> [INICIO] movimento_putaway (rotina completa estilo Delphi)")
+    logger.info(f"[REQUEST] Dados recebidos: {mov.dict()}")
+
+    # conexão crua (pymysql expected)
     conn = db.connection().connection
     cursor = conn.cursor()
-    try:
-        # Se id > 0, atualiza registro existente
-        if mov.id > 0:
-            sql_update = f"""
-                UPDATE whsproductsputaway SET
-                    Print = 'F',
-                    typeprint = 'N',
-                    RevisedQty = RevisedQty + {mov.quantidade_revisada},
-                    User_Id = CONCAT(User_Id, '{mov.usuario_id},'),
-                    StandardQty = StandardQty,
-                    LPSQty = LPSQty,
-                    UndeclaredSQty = UndeclaredSQty,
-                    RevisedVolume = {mov.volume},
-                    Description = '{mov.descricao}',
-                    Position = '{mov.posicao}',
-                    siccode = '{mov.classe}',
-                    situationregistration = 'A',
-                    dateregistration = CURRENT_TIMESTAMP
-                WHERE ID = {mov.id} AND Reference = '{mov.reference}' 
-                  AND Waybill = '{mov.waybill}' AND PN = '{mov.pn}'
-            """
-            cursor.execute(sql_update)
-            conn.commit()
-        else:
 
-            sql_insert = f"""
+    try:
+        # ----------------------------
+        # Normaliza entrada
+        # ----------------------------
+        tx_codigo_id = int(mov.id or 0)
+        quant_revisada_val = float(mov.quantidade_revisada or 0.0)
+        volume_val = int(mov.volume or 0)
+        usuario_token = (mov.usuario_id or '').strip()   # ex: '19'
+        operador_id = (mov.operador_id or '').strip()    # ex: '22'
+
+        logger.info(f"[STEP] Normalizando valores de entrada")
+        logger.info(f"[DATA] ID={tx_codigo_id} QtdRevisada={quant_revisada_val} Vol={volume_val} Usuario={usuario_token}")
+
+        # Variáveis Delphi-style
+        TipoEtiqueta = 'N'
+        StandardQty = 0.0
+        LPSQty = 0.0
+        UndeclaredSQty = 0.0
+        MultiplaEtiqueta = False
+        MaxVolume = volume_val
+        GravaIniProcesso = False
+
+        # IdUser_new será calculado para o registro principal (string com vírgula)
+        IdUser_new = usuario_token + "," if usuario_token else ""
+
+        # ----------------------------
+        # SELECT inicial (equivalente Delphi)
+        # ----------------------------
+        logger.info("[SQL] Executando SELECT inicial estilo Delphi")
+        select_sql = """
+            SELECT
+              MAX(User_Id) AS User,
+              SUM(COALESCE(RevisedQty,0)) AS QtyLanc,
+              SUM(COALESCE(Qty,0)) AS QtyProc,
+              MIN(DateProcessStart) AS DtProc,
+              SUM(COALESCE(RevisedVolume,0)) AS Volume
+            FROM whsproductsputaway
+            WHERE ID = %s
+              AND Reference = %s
+              AND Waybill = %s
+              AND PN = %s
+              AND COALESCE(situationregistration,'') <> 'E'
+        """
+        cursor.execute(select_sql, (tx_codigo_id, mov.reference, mov.waybill, mov.pn))
+        row = cursor.fetchone()
+        logger.info(f"[SQL-RESULT] Resultado SELECT: {row}")
+
+        # ----------------------------
+        # Se registro existe: UPDATE
+        # ----------------------------
+        if row and tx_codigo_id != 0:
+            logger.info("[FLOW] Fluxo UPDATE → registro existente encontrado")
+            IdUser_db = row[0] or ''                      # exemplo: '19,' ou '19,03,'
+            QtdBanco = float(row[1] or 0.0)
+            QtdProcesso = float(row[2] or 0.0)
+            DtProc = row[3]
+            VolumeDB = int(row[4] or 0)
+
+            logger.info(f"[DATA] Banco={QtdBanco} Processo={QtdProcesso} DtProc={DtProc} VolumeDB={VolumeDB}")
+
+            # Cálculo Delphi
+            DifQtd = QtdBanco + quant_revisada_val - QtdProcesso
+            logger.info(f"[DATA] DifQtd calculado: {DifQtd}")
+
+            GravaIniProcesso = (DtProc is None)
+            if GravaIniProcesso:
+                logger.info("[FLOW] GravaIniProcesso = TRUE → será gravado DateProcessStart (UPDATE)")
+
+            if VolumeDB > MaxVolume:
+                MaxVolume = VolumeDB
+
+            # TipoEtiqueta / Standard / LPS / Undeclared
+            if QtdProcesso <= 0:
+                UndeclaredSQty = quant_revisada_val
+                TipoEtiqueta = 'F'
+                logger.info("[FLOW] TipoEtiqueta=F (Undeclared)")
+            else:
+                if DifQtd <= 0:
+                    StandardQty = quant_revisada_val
+                    TipoEtiqueta = 'N'
+                    logger.info("[FLOW] TipoEtiqueta=N (Standard)")
+                else:
+                    if DifQtd >= quant_revisada_val:
+                        LPSQty = DifQtd
+                        TipoEtiqueta = 'L'
+                        logger.info("[FLOW] TipoEtiqueta=L (LPS)")
+                    else:
+                        LPSQty = DifQtd
+                        StandardQty = quant_revisada_val - DifQtd
+                        MultiplaEtiqueta = True
+                        logger.info("[FLOW] TipoEtiqueta=N+L (Múltiplas etiquetas)")
+
+            logger.info(f"[DATA] Standard={StandardQty} LPS={LPSQty} Undeclared={UndeclaredSQty} Multiple={MultiplaEtiqueta}")
+
+            # Concatenação User_Id (mantém histórico no registro principal)
+            # Delphi: se pos(LBLIdUsuario.Caption+',', IdUser) = 0 then ...
+            token_user = usuario_token + ","
+            if usuario_token and (token_user not in IdUser_db):
+                # remove trailing comma if present
+                if IdUser_db.endswith(','):
+                    base = IdUser_db[:-1]
+                else:
+                    base = IdUser_db
+                if base.strip() == '' or base.strip() == '0':
+                    IdUser_new = f"{usuario_token},"
+                else:
+                    IdUser_new = f"{base},{usuario_token},"
+            else:
+                IdUser_new = IdUser_db
+
+            logger.info(f"[DATA] User_Id final (UPDATE): {IdUser_new}")
+
+            # Montagem UPDATE dinâmico (placeholders + params)
+            update_parts = []
+            update_params = []
+
+            update_parts.append("Print = 'F'")
+            update_parts.append("typeprint = 'N'")
+
+            update_parts.append("RevisedQty = COALESCE(RevisedQty,0) + %s")
+            update_params.append(quant_revisada_val)
+
+            update_parts.append("User_Id = %s")
+            update_params.append(IdUser_new)
+
+            if GravaIniProcesso:
+                update_parts.append("DateProcessStart = CURRENT_TIMESTAMP")
+
+            update_parts.append("StandardQty = COALESCE(StandardQty,0) + %s")
+            update_params.append(StandardQty)
+            update_parts.append("LPSQty = COALESCE(LPSQty,0) + %s")
+            update_params.append(LPSQty)
+            update_parts.append("UndeclaredSQty = COALESCE(UndeclaredSQty,0) + %s")
+            update_params.append(UndeclaredSQty)
+
+            if mov.avaria:
+                update_parts.append("breakdownQty = COALESCE(breakdownQty,0) + %s")
+                update_params.append(quant_revisada_val)
+
+            update_parts.append("RevisedVolume = %s")
+            update_params.append(MaxVolume)
+
+            update_parts.append("Description = %s")
+            update_params.append(mov.descricao)
+
+            update_parts.append("Position = %s")
+            update_params.append(mov.posicao)
+
+            update_parts.append("siccode = %s")
+            update_params.append(mov.classe)
+
+            update_parts.append("situationregistration = 'A'")
+            update_parts.append("dateregistration = CURRENT_TIMESTAMP")
+
+            update_sql = "UPDATE whsproductsputaway SET " + ", ".join(update_parts) + \
+                         " WHERE ID = %s AND Reference = %s AND Waybill = %s AND PN = %s"
+
+            update_params.extend([tx_codigo_id, mov.reference, mov.waybill, mov.pn])
+
+            logger.debug(f"[SQL-UPDATE] {update_sql}")
+            logger.debug(f"[SQL-PARAMS] {update_params}")
+
+            cursor.execute(update_sql, tuple(update_params))
+            conn.commit()
+
+            logger.info(f"[SQL] UPDATE executado com sucesso, linhas afetadas: {cursor.rowcount}")
+
+            # tx_codigo_id/mov.id permanecem os mesmos (vinham no request)
+            mov.id = tx_codigo_id
+
+        # ----------------------------
+        # INSERT (registro novo) — sem MAX(ID)
+        # ----------------------------
+        else:
+            logger.info("[FLOW] Fluxo INSERT → nenhum registro encontrado (novo)")
+
+            TipoEtiqueta = "F"
+            UndeclaredSQty = quant_revisada_val
+
+            # se IdUser_new vazio, preenche com usuario atual
+            if IdUser_new == "":
+                IdUser_new = usuario_token + "," if usuario_token else ""
+
+            logger.info("[SQL] Montando INSERT principal (sem Id, autoincrement)")
+
+            # incluímos breakdownQty sempre como campo; valor será 0.0 se não houver avaria
+            insert_sql = """
                 INSERT INTO whsproductsputaway
                 (PN, Description, Position, Qty, datecreate, operator_id,
-                 Print, typeprint, RevisedQty, User_Id, StandardQty, LPSQty,
-                 UndeclaredSQty, RevisedVolume, Reference, Waybill, DateProcessStart,
+                 Print, typeprint, RevisedQty, User_Id,
+                 StandardQty, LPSQty, UndeclaredSQty, breakdownQty,
+                 RevisedVolume, Reference, Waybill, DateProcessStart,
                  situationregistration, dateregistration)
-                VALUES (
-                    '{mov.pn}', '{mov.descricao}', '{mov.posicao}', 0, CURRENT_TIMESTAMP, '{mov.operador_id}',
-                    'F', 'F', {mov.quantidade_revisada}, '{mov.usuario_id},', 0, 0, {mov.quantidade_revisada},
-                    {mov.volume}, '{mov.reference}', '{mov.waybill}', CURRENT_TIMESTAMP, 'I', CURRENT_TIMESTAMP
-                )
+                VALUES
+                (%s, %s, %s, 0, CURRENT_TIMESTAMP, %s,
+                 'F', 'F', %s, %s,
+                 %s, %s, %s, %s,
+                 %s, %s, %s, CURRENT_TIMESTAMP,
+                 'I', CURRENT_TIMESTAMP)
             """
-            logger.info(f"INSERT whsproductsputaway: {sql_insert}")
-            cursor.execute(sql_insert)
+
+            breakdown_val = quant_revisada_val if mov.avaria else 0.0
+
+            insert_params = [
+                mov.pn,               # PN
+                mov.descricao,        # Description
+                mov.posicao,          # Position
+                operador_id,          # operator_id
+                quant_revisada_val,   # RevisedQty
+                IdUser_new,           # User_Id (string com vírgula)
+                StandardQty,          # StandardQty
+                LPSQty,               # LPSQty
+                UndeclaredSQty,       # UndeclaredSQty
+                breakdown_val,        # breakdownQty
+                MaxVolume,            # RevisedVolume
+                mov.reference,        # Reference
+                mov.waybill,          # Waybill
+                # DateProcessStart is CURRENT_TIMESTAMP in SQL
+            ]
+
+            logger.debug(f"[SQL-INSERT] {insert_sql}")
+            logger.debug(f"[SQL-PARAMS] {insert_params}")
+
+            cursor.execute(insert_sql, tuple(insert_params))
+            # recuperar id gerado pelo autoincrement (MySQL / pymysql)
+            new_id = cursor.lastrowid
             conn.commit()
 
-            # Recupera o ID gerado automaticamente
-            mov.id = cursor.lastrowid
+            tx_codigo_id = new_id
+            mov.id = new_id
 
-            # Sempre insere no log
-            sql_log = f"""
+            logger.info(f"[DATA] Novo ID gerado: {new_id}")
+            logger.info("[SQL] INSERT principal executado com sucesso")
+
+        # ----------------------------
+        # GRAVAR LOG — SEMPRE (após UPDATE OU INSERT)
+        # ----------------------------
+        logger.info("[FLOW] Gravando LOG (sempre executado após UPDATE/INSERT)")
+
+        # Delphi: I=0,F=0; se MultiplaEtiqueta then I=1;F=2
+        I = 1 if MultiplaEtiqueta else 0
+        F = 2 if MultiplaEtiqueta else 0
+
+        for cont in range(I, F + 1):
+            logger.info(f"[STEP] Inserindo LOG (cont={cont})")
+
+            # Tipo print e revisedqty por iteração (Delphi)
+            if cont == 0:
+                typeprint_val = TipoEtiqueta
+                revisedqty_for_log = quant_revisada_val
+            elif cont == 1:
+                typeprint_val = "N"
+                revisedqty_for_log = StandardQty
+            elif cont == 2:
+                typeprint_val = "L"
+                revisedqty_for_log = LPSQty
+
+            logger.info(f"[DATA] typeprint={typeprint_val} revised={revisedqty_for_log}")
+
+            # Campos opcionais (mapear do model)
+            qty_for_log = mov.lbl_qtd_total if mov.lbl_qtd_total is not None else mov.quantidade_revisada
+            grn1_val = mov.grn1 if getattr(mov, "grn1", None) else None
+            processlines_val = mov.processlines if getattr(mov, "processlines", None) is not None else None
+            processdate_val = mov.processdate if getattr(mov, "processdate", None) else None
+            grn3_val = mov.grn3 if getattr(mov, "grn3", None) else None
+            aaf_val = mov.aaf if getattr(mov, "aaf", None) else None
+            rnc_val = mov.rnc if getattr(mov, "rnc", None) else None
+
+            # releasedQty segue Delphi => QuantRevisada
+            released_qty_val = quant_revisada_val
+
+            # breakdownQty conforme avaria
+            breakdown_qty_val = quant_revisada_val if mov.avaria else 0.0
+
+            # DateProcessStart: usa cells_dateprocessstart quando informado, senão NULL
+            dateprocessstart_val = None
+            if mov.cells_dateprocessstart:
+                # assumimos string passada no formato aceito pelo driver (ex: 'YYYY-MM-DD HH:MM:SS')
+                dateprocessstart_val = mov.cells_dateprocessstart
+
+            # Preparar SQL do LOG — usamos CURRENT_TIMESTAMP para datecreate e dateregistration,
+            # Print='F' e situationregistration='I' como no Delphi.
+            insert_log_sql = """
                 INSERT INTO whsproductsputawaylog
-                (Id_whsprod, Reference, Waybill, PN, Description, Position, siccode,
-                 Qty, operator_id, processlines, datecreate, Print, typeprint, User_Id,
-                 RevisedQty, RevisedVolume, releasedQty, DateProcessStart,
-                 StandardQty, LPSQty, UndeclaredSQty, situationregistration, dateregistration)
-                VALUES (
-                    {mov.id}, '{mov.reference}', '{mov.waybill}', '{mov.pn}', '{mov.descricao}', '{mov.posicao}', '{mov.classe}',
-                    {mov.quantidade_revisada}, '{mov.operador_id}', 0, CURRENT_TIMESTAMP, 'F', 'N',
-                    '{mov.usuario_id}', {mov.quantidade_revisada}, {mov.volume}, {mov.quantidade_revisada},
-                    CURRENT_TIMESTAMP, 0, 0, {mov.quantidade_revisada}, 'I', CURRENT_TIMESTAMP
-                )
+                    (Id_whsprod, Reference, Waybill, PN, Description, Position, siccode,
+                     Qty, grn1, operator_id, processlines, processdate, grn3, aaf, rnc,
+                     datecreate, Print, typeprint, User_Id, RevisedQty,
+                     breakdownQty, RevisedVolume, releasedQty, DateProcessStart,
+                     StandardQty, LPSQty, UndeclaredSQty, situationregistration, dateregistration)
+                    VALUES
+                    (%s, %s, %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s, %s, %s, %s,
+                     CURRENT_TIMESTAMP, 'F', %s, %s, %s,
+                     %s, %s, %s, %s,
+                     %s, %s, %s, 'I', CURRENT_TIMESTAMP)
+
             """
-            cursor.execute(sql_log)
+
+            # Para User_Id no LOG, deve ser SOMENTE o usuário atual (numérico) — sem vírgula.
+            # Tentamos converter usuario_token para int; se falhar, deixamos como string (driver tentará converter).
+            user_id_log = None
+            if usuario_token:
+                try:
+                    user_id_log = int(usuario_token)
+                except Exception:
+                    user_id_log = usuario_token
+
+            params_log = [
+                mov.id, mov.reference, mov.waybill, mov.pn, mov.descricao, mov.posicao, mov.classe,
+                qty_for_log, grn1_val, operador_id or None, processlines_val,
+                processdate_val, grn3_val, aaf_val, rnc_val,
+                typeprint_val, user_id_log, revisedqty_for_log, breakdown_qty_val, MaxVolume,
+                released_qty_val, dateprocessstart_val, StandardQty, LPSQty, UndeclaredSQty
+            ]
+
+            # DEBUG: conferir placeholders vs params
+            expected = insert_log_sql.count("%s")
+            received = len(params_log)
+            logger.debug(f"[DEBUG] insert_log_sql placeholders={expected}, params_log length={received}")
+            if expected != received:
+                logger.error("[ERRO] placeholders != params_log length! SQL ou params incorretos.")
+                logger.error(f"SQL: {insert_log_sql}")
+                logger.error(f"PARAMS: {params_log}")
+                raise Exception("Inconsistência entre placeholders e parâmetros no INSERT LOG")
+
+            logger.debug(f"[SQL-INSERT-LOG] {insert_log_sql}")
+            logger.debug(f"[SQL-PARAMS] {params_log}")
+
+            cursor.execute(insert_log_sql, tuple(params_log))
             conn.commit()
 
-        return {"status": "ok", "mensagem": "Movimento registrado com sucesso", "id": mov.id}
+            logger.info(f"[SQL] INSERT LOG cont={cont} executado")
+
+        # fim do loop logs
+        logger.info(">>> [SUCESSO] movimento_putaway finalizado com sucesso")
+        return {"status": "ok", "id": mov.id}
 
     except Exception as e:
-        conn.rollback()
-        return {"status": "erro", "mensagem": str(e)}
+        logger.exception("[ERRO] Exceção geral na rotina movimento_putaway")
+        try:
+            conn.rollback()
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
+
     finally:
-        cursor.close()
-        conn.close()
+        logger.info("[FINALIZAÇÃO] Fechando cursor/conexão")
+        try:
+            cursor.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
+
 

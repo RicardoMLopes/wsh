@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, APIRouter
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from typing import Optional
 import logging
 from connection.db_connection import Base, engine, SessionLocal
 from pydantic import BaseModel
@@ -100,3 +100,67 @@ def consulta_item(
         conn.close()
 
     return {"status": "ok", "resultado": resultado}
+
+#===================================================================
+# CONSULTA PARA IMPRESSÃO
+#-------------------------------------------------------------------
+@consults_rp.get("/consulta/etiquetas")
+def consulta_etiquetas(
+    pn: Optional[str] = None,
+    id_whsprod: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    logger.info(">>> Iniciando rotina consulta_etiquetas")
+    logger.debug(f"Parâmetros recebidos: pn={pn}, id_whsprod={id_whsprod}")
+
+    conn = db.connection().connection
+    cursor = conn.cursor()
+    try:
+        sql = """
+            SELECT id, Id_whsprod, pn, User_id, Description, Position, Qty, RevisedQty,
+                   siccode, reference, breakdownQty, datecreate, typeprint, print,
+                   CONCAT('PN: ', pn, '\nclasse: ', siccode, '\nPosition: ', position,
+                          '\nref: ', reference, '\nDate: ', datecreate) AS qrcode
+            FROM whsproductsputawaylog
+        """
+        if pn:
+            sql += f" WHERE PN = '{pn}'"
+            logger.info(f"Filtro aplicado: PN = {pn}")
+        elif id_whsprod:
+            sql += f" WHERE Id_whsprod = {id_whsprod}"
+            logger.info(f"Filtro aplicado: Id_whsprod = {id_whsprod}")
+
+        sql += " ORDER BY datecreate DESC, CASE typeprint WHEN 'N' THEN 1 WHEN 'L' THEN 2 WHEN 'F' THEN 3 ELSE 4 END"
+
+        try:
+            logger.info(f"Executando SELECT: {sql}")
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            logger.info(f"SELECT executado com sucesso. Linhas retornadas: {len(rows)}")
+        except Exception as e:
+            logger.error("Erro ao executar SELECT")
+            logger.exception(e)
+            return {"status": "erro", "mensagem": f"Erro no SELECT: {str(e)}"}
+
+        try:
+            colunas = [desc[0] for desc in cursor.description]
+            resultado = [dict(zip(colunas, row)) for row in rows]
+            logger.debug(f"Colunas retornadas: {colunas}")
+            logger.info("Transformação dos resultados em dicionário concluída")
+        except Exception as e:
+            logger.error("Erro ao processar resultados do SELECT")
+            logger.exception(e)
+            return {"status": "erro", "mensagem": f"Erro ao processar resultados: {str(e)}"}
+
+        logger.info(">>> Finalizando rotina consulta_etiquetas com sucesso")
+        return {"status": "ok", "resultado": resultado}
+
+    except Exception as e:
+        logger.error("Erro inesperado na rotina consulta_etiquetas")
+        logger.exception(e)
+        return {"status": "erro", "mensagem": str(e)}
+
+    finally:
+        logger.debug("Fechando cursor e conexão")
+        cursor.close()
+        conn.close()
