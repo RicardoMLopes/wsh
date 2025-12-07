@@ -59,30 +59,40 @@ def get_putaway(id: int):
 
 @consult_prod_rp.get("/productsputaway")
 @consult_prod_rp.get("/productsputaway/{pn}")
-def products_putaway(pn: Optional[str] = None):
-
-
+def products_putaway(
+    pn: Optional[str] = None,
+    position: Optional[str] = None,
+    id: Optional[int] = None
+):
     db = SessionLocal()
     try:
+        # Construir SQL dinamicamente
+        base_sql = """
+            SELECT *
+            FROM whsproductsputaway
+            WHERE situationregistration != 'E'
+        """
+
+        params = {}
+
+        if id:
+            base_sql += " AND id = :id"
+            params["id"] = id
+
         if pn:
-            sql = text("""
-                SELECT *
-                FROM whsproductsputaway
-                WHERE pn = :pn AND situationregistration != 'E'
-            """)
-            result = db.execute(sql, {"pn": pn}).fetchall()
-        else:
-            sql = text("""
-                SELECT *
-                FROM whsproductsputaway
-                WHERE situationregistration != 'E'
-            """)
-            result = db.execute(sql).fetchall()
+            base_sql += " AND pn = :pn"
+            params["pn"] = pn
+
+        if position:
+            base_sql += " AND Position LIKE :position"
+            params["position"] = f"%{position}%"
+
+        sql = text(base_sql)
+        result = db.execute(sql, params).fetchall()
 
         if not result:
             raise HTTPException(status_code=404, detail="Registro não encontrado")
 
-        # transforma cada linha em dict
         data = [dict(row._mapping) for row in result]
 
         return {"status": "ok", "data": data}
@@ -90,5 +100,6 @@ def products_putaway(pn: Optional[str] = None):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         db.close()
