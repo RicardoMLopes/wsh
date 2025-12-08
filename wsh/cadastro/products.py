@@ -1,7 +1,7 @@
 import logging
 from fastapi import Depends, APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime
@@ -172,3 +172,58 @@ def receber_produtos(request: ProdutosRequest, db: Session = Depends(get_db)):
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(e))
+
+@products_rp.post("/update_positions")
+def update_positions_run(atualizar: bool = False):
+    db = SessionLocal()
+    try:
+        if atualizar:
+            sql_insert = """
+                INSERT INTO whspositionputaway (Position)
+                SELECT DISTINCT Position 
+                FROM whsproducts
+                WHERE Position NOT IN (SELECT Position FROM whspositionputaway)
+                  AND (whsproducts.Position = '' OR whsproducts.Position IS NULL)
+            """
+            db.execute(text(sql_insert))
+            db.commit()
+
+        return {"status": "ok", "msg": "Atualização concluída"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        db.close()
+
+
+
+@products_rp.get("/positions")
+def get_positions(
+    filtro: Optional[str] = None,
+    tipo: Optional[int] = 0
+):
+    db = SessionLocal()
+    try:
+        base_sql = "SELECT * FROM whspositionputaway"
+        params = {}
+
+        if filtro:
+            if tipo == 0:  # >=
+                base_sql += " WHERE Position >= :filtro"
+                params["filtro"] = filtro
+            elif tipo == 1:  # LIKE usando *
+                base_sql += " WHERE Position LIKE :filtro"
+                params["filtro"] = filtro.replace("*", "%") + "%"
+
+        result = db.execute(text(base_sql), params).fetchall()
+        data = [dict(r._mapping) for r in result]
+
+        return {"status": "ok", "data": data}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        db.close()
