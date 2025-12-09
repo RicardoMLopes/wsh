@@ -43,31 +43,59 @@ def get_listageral(
         sql += "whsproductsputaway " if tipo == "G" else "whsproductsputawaylog "
         sql += " WHERE Id > 0 "
 
-        # filtros
+        # Controle
         if controle:
             sql += f" AND Reference = '{controle}'"
 
+        # Waybill
         if waybill:
             sql += f" AND Waybill = '{waybill}'"
 
+        # PN (codigo item)
         if codigoitem:
             sql += f" AND PN = '{codigoitem}'"
 
-        # situação do registro
+        # Situação registro
         if situacao == 0:
             sql += " AND situationregistration <> 'E' "
         elif situacao == 1:
             sql += " AND situationregistration = 'E' "
 
-        # operador
-        if operador and operador.strip() != "":
-            sql += f" AND User_Id = '{operador}'"
+        # --- STATUS (FALTA NO SEU CÓDIGO ATUAL) ---
+        if status == 1:
+            sql += " AND ((Qty = RevisedQty) AND (breakdownQty = 0)) "      # Conforme
+        elif status == 2:
+            sql += " AND LPSQty > 0 "
+        elif status == 3:
+            sql += " AND UndeclaredSQty > 0 "                               # PN não declarado
+        elif status == 4:
+            sql += " AND breakdownQty > 0 "                                 # PN com avaria
+        elif status == 5:
+            sql += " AND ((Qty > RevisedQty) AND (breakdownQty = 0)) "      # Frozen
+
+        # ProcessEnd
+        if processend == 1:
+            sql += " AND DateProcessEnd IS NOT NULL "
+
+        # Operador
+        if operador:
+            if tipo == "G":
+                sql += f" AND operator_id LIKE '%{operador}%'"
+            else:
+                sql += f" AND User_Id = '{operador}'"
+
+        # Filtro de data
+        if filtro_data == 1 and dataini and datafim:
+            if tipo == "G":
+                sql += f" AND datecreate BETWEEN '{dataini}' AND '{datafim}' "
+            else:
+                sql += f" AND dateregistration BETWEEN '{dataini}' AND '{datafim}' "
 
         # ORDER
         order_fields = [
             "",
             "Id",
-            "User_id",
+            "User_Id",
             "PN",
             "Description",
             "Qty",
