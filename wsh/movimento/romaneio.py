@@ -93,7 +93,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
             cursor.execute("""
                 INSERT INTO whsproductsputaway
                 (Id, User_id, PN, Description, Reference, Qty, Waybill, processlines, datecreate, inputtype, situationregistration, dateregistration)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (new_id, 0, item.pn, item.description, item.referencia, item.qtd,
                   item.waybill, item.processlines, datetime.now(), 'import', 'I', datetime.now()))
             inseridos += 1
