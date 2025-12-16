@@ -1,29 +1,30 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from typing import List, Optional
-import datetime
+from sqlalchemy import text
 from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
 
-a020_rp = APIRouter()
+a020_a190_rp = APIRouter()
 
 # ------------------------------
 # MODELO DOS DADOS ENVIADOS
 # ------------------------------
-class LinhaEntrada(BaseModel):
-    flag: str               # Cells[00]
-    campo01: str            # Cells[01]
-    pn: str                 # Cells[02]
-    descricao: str          # Cells[03]
-    qty: str                # Cells[04]
-    referencia: str         # Cells[05]
-    waybill: str            # Cells[06]
-    processlines: str       # Cells[07]
-    usarDescricaoPN: bool   # CBPnDescricao.Checked
+class Linha(BaseModel):
+    flag: str
+    campo01: str
+    pn: str
+    descricao: str
+    qty: str
+    referencia: str
+    waybill: str
+    processlines: str
+    usarDescricaoPN: bool
 
 
 class ImportacaoRequest(BaseModel):
-    linhas: List[LinhaEntrada]
+    tipo: str                     # <- AGORA O TIPO VEM NO JSON
+    linhas: list[Linha]
+
 
 
 # ------------------------------------------------------
@@ -40,89 +41,102 @@ def get_db():
 # ------------------------------------------------------
 # ROTA PRINCIPAL
 # ------------------------------------------------------
-@a020_rp.post("/importar/nacional020")
-def importar_nacional020(payload: ImportacaoRequest, db: Session = Depends(get_db)):
+@a020_a190_rp.post("/importar/a020_a190")
+def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)):
+
+    tipo = payload.tipo.upper()
+    inputtype = "national" if tipo == "A020" else "transfer"
 
     for linha in payload.linhas:
 
         if linha.campo01.strip() == "" or linha.flag.strip() == "S":
             continue
 
-        # -----------------------------------------
+        # ----------------------------------------------------
         # VERIFICA SE JÁ EXISTE
-        # -----------------------------------------
-        db.execute("""
-            SELECT TOP 1 *
+        # ----------------------------------------------------
+        consulta = text("""
+            SELECT *
             FROM whsproductsputaway
-            WHERE Reference = ?
-              AND Waybill = ?
-              AND PN = ?
+            WHERE Reference = :reference
+              AND Waybill = :waybill
+              AND PN = :pn
               AND situationregistration <> 'E'
-        """, (linha.referencia, linha.waybill, linha.pn))
+            LIMIT 1
+        """)
 
-        row = db.fetchone()
+        result = db.execute(consulta, {
+            "reference": linha.referencia,
+            "waybill": linha.waybill,
+            "pn": linha.pn
+        }).mappings().first()
 
-        # -----------------------------------------
-        # 1) SE EXISTE → ATUALIZA
-        # -----------------------------------------
-        if row:
+        # ----------------------------------------------------
+        # SE EXISTE → ATUALIZA
+        # ----------------------------------------------------
+        if result:
 
-            revisedQty = row.RevisedQty if row.RevisedQty is not None else 0
+            revisedQty = result["RevisedQty"] if result["RevisedQty"] is not None else 0
 
             if revisedQty == 0 and linha.flag != "S":
 
                 descricao = linha.descricao if not linha.usarDescricaoPN else linha.pn
 
-                db.execute("""
+                update_sql = text("""
                     UPDATE whsproductsputaway
-                    SET Qty = ?,
-                        Description = ?,
-                        processlines = ?,
+                    SET Qty = :qty,
+                        Description = :descricao,
+                        processlines = :processlines,
+                        inputtype = :inputtype,
                         situationregistration = 'A',
-                        dateregistration = GETDATE()
-                    WHERE Reference = ?
-                      AND Waybill = ?
-                      AND PN = ?
-                """, (
-                    linha.qty,
-                    descricao,
-                    linha.processlines,
-                    linha.referencia,
-                    linha.waybill,
-                    linha.pn
-                ))
+                        dateregistration = NOW()
+                    WHERE Reference = :reference
+                      AND Waybill = :waybill
+                      AND PN = :pn
+                """)
+
+                db.execute(update_sql, {
+                    "qty": linha.qty,
+                    "descricao": descricao,
+                    "processlines": linha.processlines,
+                    "inputtype": inputtype,
+                    "reference": linha.referencia,
+                    "waybill": linha.waybill,
+                    "pn": linha.pn
+                })
                 db.commit()
 
-        # -----------------------------------------
-        # 2) SE NÃO EXISTE → INSERE
-        # -----------------------------------------
+        # ----------------------------------------------------
+        # SE NÃO EXISTE → INSERE
+        # ----------------------------------------------------
         else:
 
-            db.execute("SELECT MAX(ID) FROM whsproductsputaway")
-            result = db.fetchone()
-            max_id = result[0] if result[0] else 0
+            max_id = db.execute(text("SELECT COALESCE(MAX(ID), 0) AS id FROM whsproductsputaway")).scalar()
             max_id += 1
 
             descricao = linha.descricao if not linha.usarDescricaoPN else linha.pn
 
-            db.execute("""
+            insert_sql = text("""
                 INSERT INTO whsproductsputaway
                     (Id, User_id, PN, Description, Reference, Qty,
-                     Waybill, processlines, datecreate,
+                     Waybill, processlines, inputtype, datecreate,
                      situationregistration, dateregistration)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, GETDATE())
-            """, (
-                max_id,
-                0,
-                linha.pn,
-                descricao,
-                linha.referencia,
-                linha.qty,
-                linha.waybill,
-                linha.processlines,
-                "I"
-            ))
+                VALUES
+                    (:id, 0, :pn, :descricao, :reference, :qty,
+                     :waybill, :processlines, :inputtype, NOW(),
+                     'I', NOW())
+            """)
 
+            db.execute(insert_sql, {
+                "id": max_id,
+                "pn": linha.pn,
+                "descricao": descricao,
+                "reference": linha.referencia,
+                "qty": linha.qty,
+                "waybill": linha.waybill,
+                "processlines": linha.processlines,
+                "inputtype": inputtype
+            })
             db.commit()
 
     return {"status": "OK", "mensagem": "Rotina executada com sucesso!"}

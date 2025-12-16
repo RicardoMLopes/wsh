@@ -6,7 +6,7 @@ from connection.db_connection import SessionLocal
 
 acompanhamento_rp = APIRouter()
 
-logger = logging.getLogger("produtividade")
+logger = logging.getLogger("acompanhamento")
 logging.basicConfig(level=logging.INFO)
 
 def get_db():

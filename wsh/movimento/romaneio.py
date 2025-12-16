@@ -5,7 +5,7 @@ from typing import List
 from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
 from datetime import datetime
-import logging
+import logging, time
 
 
 moviment_rp = APIRouter()
@@ -44,7 +44,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
 
     for item in items:
         total += 1
-        logger.info(f"Recebido item: {item}")
+        # logger.info(f"Recebido item: {item}")
 
         # Verifica se já existe
         cursor.execute("""
@@ -52,7 +52,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
             WHERE Reference=%s AND Waybill=%s AND PN=%s AND situationregistration <> 'E'
         """, (item.referencia, item.waybill, item.pn))
         row = cursor.fetchone()
-        logger.info(f"Resultado SELECT: {row}")
+        # logger.info(f"Resultado SELECT: {row}")
 
         if row:
             # Pega RevisedQty e situationregistration
@@ -68,14 +68,14 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
             except ValueError:
                 situation = None
 
-            logger.info(f"RevisedQty={revised_qty}, situation={situation}")
+            # logger.info(f"RevisedQty={revised_qty}, situation={situation}")
 
             # Só atualiza se ainda está como inserido
             if revised_qty == 0 and situation == 'I':
-                logger.info("Executando UPDATE...")
+                # logger.info("Executando UPDATE...")
                 cursor.execute("""
                     UPDATE whsproductsputaway
-                    SET Qty=%s, Description=%s, processlines=%s, situationregistration='A', dateregistration=%s
+                    SET Qty=%s, Description=%s, processlines=%s, inputtype='import', situationregistration='A', dateregistration=%s
                     WHERE Reference=%s AND Waybill=%s AND PN=%s
                 """, (item.qtd, item.description, item.processlines, datetime.now(),
                       item.referencia, item.waybill, item.pn))
@@ -84,24 +84,24 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
                 ignorados += 1
         else:
             # Faz INSERT
-            logger.info("Nenhum registro encontrado, executando INSERT...")
+            # logger.info("Nenhum registro encontrado, executando INSERT...")
             cursor.execute("SELECT MAX(Id) FROM whsproductsputaway")
             max_id = cursor.fetchone()[0] or 0
             new_id = max_id + 1
-            logger.info(f"Novo Id calculado: {new_id}")
+            # logger.info(f"Novo Id calculado: {new_id}")
 
             cursor.execute("""
                 INSERT INTO whsproductsputaway
-                (Id, User_id, PN, Description, Reference, Qty, Waybill, processlines, datecreate, situationregistration, dateregistration)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (Id, User_id, PN, Description, Reference, Qty, Waybill, processlines, datecreate, inputtype, situationregistration, dateregistration)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %, %s, %s)
             """, (new_id, 0, item.pn, item.description, item.referencia, item.qtd,
-                  item.waybill, item.processlines, datetime.now(), 'I', datetime.now()))
+                  item.waybill, item.processlines, datetime.now(), 'import', 'I', datetime.now()))
             inseridos += 1
 
     conn.commit()
     cursor.close()
     conn.close()
-    logger.info("Operação concluída com sucesso.")
+    # logger.info("Operação concluída com sucesso.")
 
     return {
         "status": "ok",
@@ -146,6 +146,12 @@ def atualiza_posicao(db: Session = Depends(get_db)):
         "siccodes_atualizados": sic_atualizados
     }
 
+#-------------=====================------------------------------------------
+#                   TAREFA
+#============================================================================
+logger = logging.getLogger("tarefas")
+logging.basicConfig(level=logging.INFO)
+
 
 @moviment_rp.get("/tarefas")
 def listar_tarefas(
@@ -154,14 +160,30 @@ def listar_tarefas(
     pn: str = None,
     operador: str = None,
     emergencial: bool = False,
+
+    # novos filtros
+    data_tipo: str = None,   # datecreate | start | end | aaf | grn | grn3
+    data_ini: str = None,    # YYYY-MM-DD
+    data_fim: str = None,    # YYYY-MM-DD
+    ordenacao: int = 0,      # 0 | 1 | 2
+
     grn1: str = None,
     grn3: str = None,
     processdate: str = None,
     aaf: str = None,
     rnc: str = None,
     grn: str = None,
+
     db: Session = Depends(get_db)
 ):
+    # logger.info("===== INICIO /tarefas =====")
+    # logger.info(
+    #     f"Parâmetros recebidos: referencia={referencia}, waybill={waybill}, pn={pn}, "
+    #     f"operador={operador}, emergencial={emergencial}, "
+    #     f"data_tipo={data_tipo}, data_ini={data_ini}, data_fim={data_fim}, "
+    #     f"ordenacao={ordenacao}"
+    # )
+
     conn = db.connection().connection
     cursor = conn.cursor()
 
@@ -185,61 +207,111 @@ def listar_tarefas(
 
     params = []
 
+    # filtros básicos
     if referencia:
         sql += " AND Reference=%s"
         params.append(referencia)
+
     if waybill:
         sql += " AND Waybill=%s"
         params.append(waybill)
+
     if pn:
         sql += " AND PN=%s"
         params.append(pn)
+
     if operador:
         sql += " AND operator_id LIKE %s"
         params.append(f"%{operador}%")
+
     if emergencial:
         sql += " AND LEFT(Criticality,1)='E'"
+
     if grn1:
         sql += " AND GRN1=%s"
         params.append(grn1)
+
     if grn3:
         sql += " AND GRN3=%s"
         params.append(grn3)
+
     if processdate:
         sql += " AND processdate=%s"
         params.append(processdate)
+
     if aaf:
         sql += " AND AAF=%s"
         params.append(aaf)
+
     if rnc:
         sql += " AND RNC=%s"
         params.append(rnc)
+
     if grn:
         sql += " AND GRN=%s"
         params.append(grn)
 
+    # filtro de período (igual Delphi)
+    if data_tipo and data_ini and data_fim:
+        if data_tipo == "datecreate":
+            sql += " AND datecreate BETWEEN %s AND %s"
+        elif data_tipo == "start":
+            sql += " AND DateProcessStart BETWEEN %s AND %s"
+        elif data_tipo == "end":
+            sql += " AND DateProcessEnd BETWEEN %s AND %s"
+        elif data_tipo == "aaf":
+            sql += " AND aaf BETWEEN %s AND %s"
+        elif data_tipo == "grn":
+            sql += " AND grn BETWEEN %s AND %s"
+        elif data_tipo == "grn3":
+            sql += " AND grn3 BETWEEN %s AND %s"
+
+        params.extend([data_ini, data_fim])
+
+    # group by
     sql += " GROUP BY Reference, Waybill, operator_id, IFNULL(grn1,1), grn1"
-    sql += " ORDER BY IFNULL(grn1,1), grn1, MIN(datecreate), Reference"
+
+    # ordenação
+    if ordenacao == 0:
+        sql += " ORDER BY _DateProcessStart"
+    elif ordenacao == 1:
+        sql += " ORDER BY _DateProcessStart IS NULL, _dCreat ASC"
+    elif ordenacao == 2:
+        sql += " ORDER BY _DateProcessEnd IS NULL, _dCreat ASC"
+
+    # ===================== LOGS IMPORTANTES =====================
+    # logger.info("SQL FINAL (com placeholders):")
+    # logger.info(sql)
+    #
+    # logger.info("PARAMETROS:")
+    # logger.info(params)
+
+    # SQL apenas para visualização (NÃO usar em produção)
+    sql_debug = sql
+    for p in params:
+        sql_debug = sql_debug.replace("%s", f"'{p}'", 1)
+
+    # logger.info("SQL DEBUG (para copiar e colar no banco):")
+    logger.info(sql_debug)
+    # ============================================================
 
     cursor.execute(sql, tuple(params))
     rows = cursor.fetchall()
 
-    # monta lista de dicionários
+ #  logger.info(f"Total de registros retornados: {len(rows)}")
+
     colunas = [desc[0] for desc in cursor.description]
     resultado = [dict(zip(colunas, row)) for row in rows]
 
     cursor.close()
     conn.close()
 
+ #   logger.info("===== FIM /tarefas =====")
     return resultado
 
 #======================================================================================
 #   IMPORTAÇÃO aurora071
 #---------------------------------------------------------------------------------------
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-import logging, time
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -249,13 +321,12 @@ def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=10
     while True:
         sql = sql_template.format(lote=lote)
         try:
-            logging.info("Iniciando [%s] lote %d...", chave, lote_num)
+            # logging.info("Iniciando [%s] lote %d...", chave, lote_num)
             start = time.time()
             afetados = cursor.execute(sql)
             conn.commit()
             duration = time.time() - start
-            logging.info("Finalizado [%s] lote %d: %s registros afetados em %.2f segundos",
-                         chave, lote_num, afetados, duration)
+            # logging.info("Finalizado [%s] lote %d: %s registros afetados em %.2f segundos", chave, lote_num, afetados, duration)
             total_afetados += afetados
             if afetados == 0:
                 break
@@ -263,7 +334,7 @@ def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=10
         except Exception as e:
             conn.rollback()
             resultados[chave] = f"erro: {str(e)}"
-            logging.error("Erro ao executar [%s] lote %d: %s", chave, lote_num, e)
+            # logging.error("Erro ao executar [%s] lote %d: %s", chave, lote_num, e)
             break
     resultados[chave] = total_afetados
 
@@ -375,18 +446,17 @@ def processar_aurora071(
 #--------------------------------------------------------------------------------------------------------
 def executar_sql(cursor, conn, sql, resultados, chave):
     try:
-        logging.info("Iniciando [%s]...", chave)
+        # logging.info("Iniciando [%s]...", chave)
         start = time.time()
         cursor.execute(sql)
         conn.commit()
         duration = time.time() - start
         resultados[chave] = cursor.rowcount
-        logging.info("Finalizado [%s]: %s registros afetados em %.2f segundos",
-                     chave, cursor.rowcount, duration)
+        # logging.info("Finalizado [%s]: %s registros afetados em %.2f segundos",chave, cursor.rowcount, duration)
     except Exception as e:
         conn.rollback()
         resultados[chave] = f"erro: {str(e)}"
-        logging.error("Erro ao executar [%s]: %s", chave, e)
+        # logging.error("Erro ao executar [%s]: %s", chave, e)
 
 @moviment_rp.post("/auroraAAF/process")
 def processar_auroraAAF(
@@ -540,8 +610,8 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
     - Grava LOG sempre (após UPDATE ou INSERT)
     - whsproductsputawaylog.User_Id recebe apenas usuario atual (numérico)
     """
-    logger.info(">>> [INICIO] movimento_putaway (rotina completa estilo Delphi)")
-    logger.info(f"[REQUEST] Dados recebidos: {mov.dict()}")
+    # logger.info(">>> [INICIO] movimento_putaway (rotina completa estilo Delphi)")
+    # logger.info(f"[REQUEST] Dados recebidos: {mov.dict()}")
 
     # conexão crua (pymysql expected)
     conn = db.connection().connection
@@ -557,8 +627,8 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         usuario_token = (mov.usuario_id or '').strip()   # ex: '19'
         operador_id = (mov.operador_id or '').strip()    # ex: '22'
 
-        logger.info(f"[STEP] Normalizando valores de entrada")
-        logger.info(f"[DATA] ID={tx_codigo_id} QtdRevisada={quant_revisada_val} Vol={volume_val} Usuario={usuario_token}")
+        # logger.info(f"[STEP] Normalizando valores de entrada")
+        # logger.info(f"[DATA] ID={tx_codigo_id} QtdRevisada={quant_revisada_val} Vol={volume_val} Usuario={usuario_token}")
 
         # Variáveis Delphi-style
         TipoEtiqueta = 'N'
@@ -575,7 +645,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         # ----------------------------
         # SELECT inicial (equivalente Delphi)
         # ----------------------------
-        logger.info("[SQL] Executando SELECT inicial estilo Delphi")
+        # logger.info("[SQL] Executando SELECT inicial estilo Delphi")
         select_sql = """
             SELECT
               MAX(User_Id) AS User,
@@ -592,24 +662,24 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         """
         cursor.execute(select_sql, (tx_codigo_id, mov.reference, mov.waybill, mov.pn))
         row = cursor.fetchone()
-        logger.info(f"[SQL-RESULT] Resultado SELECT: {row}")
+        # logger.info(f"[SQL-RESULT] Resultado SELECT: {row}")
 
         # ----------------------------
         # Se registro existe: UPDATE
         # ----------------------------
         if row and tx_codigo_id != 0:
-            logger.info("[FLOW] Fluxo UPDATE → registro existente encontrado")
+            # logger.info("[FLOW] Fluxo UPDATE → registro existente encontrado")
             IdUser_db = row[0] or ''                      # exemplo: '19,' ou '19,03,'
             QtdBanco = float(row[1] or 0.0)
             QtdProcesso = float(row[2] or 0.0)
             DtProc = row[3]
             VolumeDB = int(row[4] or 0)
 
-            logger.info(f"[DATA] Banco={QtdBanco} Processo={QtdProcesso} DtProc={DtProc} VolumeDB={VolumeDB}")
+            # logger.info(f"[DATA] Banco={QtdBanco} Processo={QtdProcesso} DtProc={DtProc} VolumeDB={VolumeDB}")
 
             # Cálculo Delphi
             DifQtd = QtdBanco + quant_revisada_val - QtdProcesso
-            logger.info(f"[DATA] DifQtd calculado: {DifQtd}")
+            # logger.info(f"[DATA] DifQtd calculado: {DifQtd}")
 
             GravaIniProcesso = (DtProc is None)
             if GravaIniProcesso:
@@ -622,22 +692,22 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             if QtdProcesso <= 0:
                 UndeclaredSQty = quant_revisada_val
                 TipoEtiqueta = 'F'
-                logger.info("[FLOW] TipoEtiqueta=F (Undeclared)")
+                # logger.info("[FLOW] TipoEtiqueta=F (Undeclared)")
             else:
                 if DifQtd <= 0:
                     StandardQty = quant_revisada_val
                     TipoEtiqueta = 'N'
-                    logger.info("[FLOW] TipoEtiqueta=N (Standard)")
+                    # logger.info("[FLOW] TipoEtiqueta=N (Standard)")
                 else:
                     if DifQtd >= quant_revisada_val:
                         LPSQty = DifQtd
                         TipoEtiqueta = 'L'
-                        logger.info("[FLOW] TipoEtiqueta=L (LPS)")
+                        # logger.info("[FLOW] TipoEtiqueta=L (LPS)")
                     else:
                         LPSQty = DifQtd
                         StandardQty = quant_revisada_val - DifQtd
                         MultiplaEtiqueta = True
-                        logger.info("[FLOW] TipoEtiqueta=N+L (Múltiplas etiquetas)")
+                        # logger.info("[FLOW] TipoEtiqueta=N+L (Múltiplas etiquetas)")
 
             logger.info(f"[DATA] Standard={StandardQty} LPS={LPSQty} Undeclared={UndeclaredSQty} Multiple={MultiplaEtiqueta}")
 
@@ -657,7 +727,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             else:
                 IdUser_new = IdUser_db
 
-            logger.info(f"[DATA] User_Id final (UPDATE): {IdUser_new}")
+            # logger.info(f"[DATA] User_Id final (UPDATE): {IdUser_new}")
 
             # Montagem UPDATE dinâmico (placeholders + params)
             update_parts = []
@@ -706,13 +776,13 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
 
             update_params.extend([tx_codigo_id, mov.reference, mov.waybill, mov.pn])
 
-            logger.debug(f"[SQL-UPDATE] {update_sql}")
-            logger.debug(f"[SQL-PARAMS] {update_params}")
+            # logger.debug(f"[SQL-UPDATE] {update_sql}")
+            # logger.debug(f"[SQL-PARAMS] {update_params}")
 
             cursor.execute(update_sql, tuple(update_params))
             conn.commit()
 
-            logger.info(f"[SQL] UPDATE executado com sucesso, linhas afetadas: {cursor.rowcount}")
+            # logger.info(f"[SQL] UPDATE executado com sucesso, linhas afetadas: {cursor.rowcount}")
 
             # tx_codigo_id/mov.id permanecem os mesmos (vinham no request)
             mov.id = tx_codigo_id
@@ -721,7 +791,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         # INSERT (registro novo) — sem MAX(ID)
         # ----------------------------
         else:
-            logger.info("[FLOW] Fluxo INSERT → nenhum registro encontrado (novo)")
+            # logger.info("[FLOW] Fluxo INSERT → nenhum registro encontrado (novo)")
 
             TipoEtiqueta = "F"
             UndeclaredSQty = quant_revisada_val
@@ -730,7 +800,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             if IdUser_new == "":
                 IdUser_new = usuario_token + "," if usuario_token else ""
 
-            logger.info("[SQL] Montando INSERT principal (sem Id, autoincrement)")
+            # logger.info("[SQL] Montando INSERT principal (sem Id, autoincrement)")
 
             # incluímos breakdownQty sempre como campo; valor será 0.0 se não houver avaria
             insert_sql = """
@@ -767,8 +837,8 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                 # DateProcessStart is CURRENT_TIMESTAMP in SQL
             ]
 
-            logger.debug(f"[SQL-INSERT] {insert_sql}")
-            logger.debug(f"[SQL-PARAMS] {insert_params}")
+            # logger.debug(f"[SQL-INSERT] {insert_sql}")
+            # logger.debug(f"[SQL-PARAMS] {insert_params}")
 
             cursor.execute(insert_sql, tuple(insert_params))
             # recuperar id gerado pelo autoincrement (MySQL / pymysql)
@@ -778,8 +848,8 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             tx_codigo_id = new_id
             mov.id = new_id
 
-            logger.info(f"[DATA] Novo ID gerado: {new_id}")
-            logger.info("[SQL] INSERT principal executado com sucesso")
+            # logger.info(f"[DATA] Novo ID gerado: {new_id}")
+            # logger.info("[SQL] INSERT principal executado com sucesso")
 
         # ----------------------------
         # GRAVAR LOG — SEMPRE (após UPDATE OU INSERT)
@@ -791,7 +861,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         F = 2 if MultiplaEtiqueta else 0
 
         for cont in range(I, F + 1):
-            logger.info(f"[STEP] Inserindo LOG (cont={cont})")
+            # logger.info(f"[STEP] Inserindo LOG (cont={cont})")
 
             # Tipo print e revisedqty por iteração (Delphi)
             if cont == 0:
@@ -804,7 +874,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                 typeprint_val = "L"
                 revisedqty_for_log = LPSQty
 
-            logger.info(f"[DATA] typeprint={typeprint_val} revised={revisedqty_for_log}")
+            # logger.info(f"[DATA] typeprint={typeprint_val} revised={revisedqty_for_log}")
 
             # Campos opcionais (mapear do model)
             qty_for_log = mov.lbl_qtd_total if mov.lbl_qtd_total is not None else mov.quantidade_revisada
@@ -865,27 +935,27 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             # DEBUG: conferir placeholders vs params
             expected = insert_log_sql.count("%s")
             received = len(params_log)
-            logger.debug(f"[DEBUG] insert_log_sql placeholders={expected}, params_log length={received}")
+            # logger.debug(f"[DEBUG] insert_log_sql placeholders={expected}, params_log length={received}")
             if expected != received:
-                logger.error("[ERRO] placeholders != params_log length! SQL ou params incorretos.")
-                logger.error(f"SQL: {insert_log_sql}")
-                logger.error(f"PARAMS: {params_log}")
+                # logger.error("[ERRO] placeholders != params_log length! SQL ou params incorretos.")
+                # logger.error(f"SQL: {insert_log_sql}")
+                # logger.error(f"PARAMS: {params_log}")
                 raise Exception("Inconsistência entre placeholders e parâmetros no INSERT LOG")
 
-            logger.debug(f"[SQL-INSERT-LOG] {insert_log_sql}")
-            logger.debug(f"[SQL-PARAMS] {params_log}")
+            # logger.debug(f"[SQL-INSERT-LOG] {insert_log_sql}")
+            # logger.debug(f"[SQL-PARAMS] {params_log}")
 
             cursor.execute(insert_log_sql, tuple(params_log))
             conn.commit()
 
-            logger.info(f"[SQL] INSERT LOG cont={cont} executado")
+            # logger.info(f"[SQL] INSERT LOG cont={cont} executado")
 
         # fim do loop logs
-        logger.info(">>> [SUCESSO] movimento_putaway finalizado com sucesso")
+        # logger.info(">>> [SUCESSO] movimento_putaway finalizado com sucesso")
         return {"status": "ok", "id": mov.id}
 
     except Exception as e:
-        logger.exception("[ERRO] Exceção geral na rotina movimento_putaway")
+        # logger.exception("[ERRO] Exceção geral na rotina movimento_putaway")
         try:
             conn.rollback()
         except:
