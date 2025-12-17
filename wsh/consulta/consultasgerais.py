@@ -62,6 +62,7 @@ def consulta_item(
             SELECT Description, Position, siccode
             FROM whsproducts
             WHERE PN = '{pn}' AND situationregistration <> 'E'
+            order by id desc 
         """
         cursor.execute(sql_products)
         row = cursor.fetchone()
