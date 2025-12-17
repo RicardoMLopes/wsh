@@ -44,7 +44,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
 
     for item in items:
         total += 1
-        # logger.info(f"Recebido item: {item}")
+        logger.info(f"Recebido item: {item}")
 
         # Verifica se já existe
         cursor.execute("""
@@ -52,7 +52,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
             WHERE Reference=%s AND Waybill=%s AND PN=%s AND situationregistration <> 'E'
         """, (item.referencia, item.waybill, item.pn))
         row = cursor.fetchone()
-        # logger.info(f"Resultado SELECT: {row}")
+        logger.info(f"Resultado SELECT: {row}")
 
         if row:
             # Pega RevisedQty e situationregistration
@@ -101,7 +101,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
     conn.commit()
     cursor.close()
     conn.close()
-    # logger.info("Operação concluída com sucesso.")
+    logger.info("Operação concluída com sucesso.")
 
     return {
         "status": "ok",
@@ -147,11 +147,8 @@ def atualiza_posicao(db: Session = Depends(get_db)):
     }
 
 #-------------=====================------------------------------------------
-#                   TAREFA
+#                  MOVIMENTO TAREFA
 #============================================================================
-logger = logging.getLogger("tarefas")
-logging.basicConfig(level=logging.INFO)
-
 
 @moviment_rp.get("/tarefas")
 def listar_tarefas(
@@ -311,9 +308,7 @@ def listar_tarefas(
 
 #======================================================================================
 #   IMPORTAÇÃO aurora071
-#---------------------------------------------------------------------------------------
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+#--------------------------------------------------------------------------------------
 
 def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=10000):
     total_afetados = 0
@@ -338,6 +333,9 @@ def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=10
             break
     resultados[chave] = total_afetados
 
+#=============================================================================================
+#                 MOVIMENTO aurora071
+#=============================================================================================
 @moviment_rp.post("/aurora071/process")
 def processar_aurora071(
     update_geral: bool = False,
@@ -442,7 +440,7 @@ def processar_aurora071(
     return {"status": "ok", "resultados": resultados}
 
 #========================================================================================================
-#
+#         MOVIMENTO auroraAAF
 #--------------------------------------------------------------------------------------------------------
 def executar_sql(cursor, conn, sql, resultados, chave):
     try:
@@ -571,8 +569,6 @@ def atribuir_operador(
 #================================================================================================
 #                    GRAVAR O MOVIMENTO
 #------------------------------------------------------------------------------------------------
-
-logger = logging.getLogger("movimento_putaway")
 
 class MovimentoPutaway(BaseModel):
     id: int = Field(0)

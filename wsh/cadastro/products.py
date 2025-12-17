@@ -41,7 +41,7 @@ def get_db():
 def receber_produtos(request: ProdutosRequest, db: Session = Depends(get_db)):
     produtos = request.produtos
     total = len(produtos)
-    logger.info(f"Recebendo {total} produtos (bulk staging + estatísticas + MERGE)")
+    logger.info(f"Recebendo {total} produtos (bulk staging + estatísticas + UPDATE/INSERT)")
 
     CHUNK_SIZE = 5000
 
@@ -54,7 +54,11 @@ def receber_produtos(request: ProdutosRequest, db: Session = Depends(get_db)):
             INSERT INTO staging_products (PN, Description, Position, PositionAux, SiCcode)
             VALUES (%s, %s, %s, %s, %s)
         """
-        staging_rows = [(item.PN, item.Description, item.Position, item.PositionAux, item.SiCcode) for item in produtos]
+        staging_rows = [
+            (item.PN, item.Description, item.Position, item.PositionAux, item.SiCcode)
+            for item in produtos
+            if item.PN and item.PN.strip()
+        ]
 
         pos = 0
         total_staging = len(staging_rows)
@@ -65,54 +69,52 @@ def receber_produtos(request: ProdutosRequest, db: Session = Depends(get_db)):
             logger.info(f"  Inseridos na staging: {min(pos, total_staging)}/{total_staging}")
         conn.commit()
 
-        # 2) Criar staging única para evitar duplicatas
+        # 2) Criar staging única (deduplicação por PN)
         cursor.execute("DROP TEMPORARY TABLE IF EXISTS staging_unique")
         cursor.execute("""
             CREATE TEMPORARY TABLE staging_unique AS
-            SELECT DISTINCT PN, Description, Position, PositionAux, SiCcode
+            SELECT PN,
+                   MAX(Description)   AS Description,
+                   MAX(Position)      AS Position,
+                   MAX(PositionAux)   AS PositionAux,
+                   MAX(SiCcode)       AS SiCcode
             FROM staging_products
+            GROUP BY PN
         """)
         conn.commit()
 
-        # 3) Calcular estatísticas com normalização
+        # 3) Estatísticas
         logger.info("Calculando estatísticas...")
 
         inserts_sql = """
-            SELECT COUNT(*) FROM staging_unique s
-            LEFT JOIN (SELECT PN FROM whsproducts GROUP BY PN) w ON w.PN = s.PN
+            SELECT COUNT(*)
+            FROM staging_unique s
+            LEFT JOIN whsproducts w ON w.PN = s.PN
             WHERE w.PN IS NULL
         """
+
         updates_sql = """
-            SELECT COUNT(*) FROM staging_unique s
-            JOIN (
-                SELECT PN,
-                       MAX(Description) AS Description,
-                       MAX(Position) AS Position,
-                       MAX(PositionAux) AS PositionAux,
-                       MAX(SiCcode) AS SiCcode
-                FROM whsproducts
-                GROUP BY PN
-            ) w ON w.PN = s.PN
-            WHERE (COALESCE(TRIM(UPPER(w.Description)),'') <> COALESCE(TRIM(UPPER(s.Description)),'')
-                OR COALESCE(TRIM(UPPER(w.Position)),'') <> COALESCE(TRIM(UPPER(s.Position)),'')
-                OR COALESCE(TRIM(UPPER(w.PositionAux)),'') <> COALESCE(TRIM(UPPER(s.PositionAux)),'')
-                OR COALESCE(TRIM(UPPER(w.SiCcode)),'') <> COALESCE(TRIM(UPPER(s.SiCcode)),''))
+            SELECT COUNT(*)
+            FROM staging_unique s
+            JOIN whsproducts w ON w.PN = s.PN
+            WHERE w.situationregistration <> 'E'
+              AND (
+                    COALESCE(TRIM(UPPER(w.Description)),'') <> COALESCE(TRIM(UPPER(s.Description)),'') OR
+                    COALESCE(TRIM(UPPER(w.Position)),'') <> COALESCE(TRIM(UPPER(s.Position)),'') OR
+                    COALESCE(TRIM(UPPER(w.PositionAux)),'') <> COALESCE(TRIM(UPPER(s.PositionAux)),'') OR
+                    COALESCE(TRIM(UPPER(w.SiCcode)),'') <> COALESCE(TRIM(UPPER(s.SiCcode)),''))
         """
+
         ignorados_sql = """
-            SELECT COUNT(*) FROM staging_unique s
-            JOIN (
-                SELECT PN,
-                       MAX(Description) AS Description,
-                       MAX(Position) AS Position,
-                       MAX(PositionAux) AS PositionAux,
-                       MAX(SiCcode) AS SiCcode
-                FROM whsproducts
-                GROUP BY PN
-            ) w ON w.PN = s.PN
-            WHERE (COALESCE(TRIM(UPPER(w.Description)),'') = COALESCE(TRIM(UPPER(s.Description)),'')
-                AND COALESCE(TRIM(UPPER(w.Position)),'') = COALESCE(TRIM(UPPER(s.Position)),'')
-                AND COALESCE(TRIM(UPPER(w.PositionAux)),'') = COALESCE(TRIM(UPPER(s.PositionAux)),'')
-                AND COALESCE(TRIM(UPPER(w.SiCcode)),'') = COALESCE(TRIM(UPPER(s.SiCcode)),''))
+            SELECT COUNT(*)
+            FROM staging_unique s
+            JOIN whsproducts w ON w.PN = s.PN
+            WHERE w.situationregistration <> 'E'
+              AND (
+                    COALESCE(TRIM(UPPER(w.Description)),'') = COALESCE(TRIM(UPPER(s.Description)),'') AND
+                    COALESCE(TRIM(UPPER(w.Position)),'') = COALESCE(TRIM(UPPER(s.Position)),'') AND
+                    COALESCE(TRIM(UPPER(w.PositionAux)),'') = COALESCE(TRIM(UPPER(s.PositionAux)),'') AND
+                    COALESCE(TRIM(UPPER(w.SiCcode)),'') = COALESCE(TRIM(UPPER(s.SiCcode)),''))
         """
 
         cursor.execute(inserts_sql)
@@ -124,31 +126,47 @@ def receber_produtos(request: ProdutosRequest, db: Session = Depends(get_db)):
         cursor.execute(ignorados_sql)
         ignorados = cursor.fetchone()[0]
 
-        if inseridos + atualizados + ignorados != total:
-            logger.warning(f"Totais não batem: {inseridos}+{atualizados}+{ignorados} != {total}")
-
-        # 4) MERGE em lote
-        logger.info("Executando MERGE...")
-        merge_sql = """
-            INSERT INTO whsproducts (PN, Description, Position, PositionAux, SiCcode, situationregistration, dateregistration)
-            SELECT PN, Description, Position, PositionAux, SiCcode, 'I', NOW()
-            FROM staging_unique
-            ON DUPLICATE KEY UPDATE
-                Description = VALUES(Description),
-                Position = VALUES(Position),
-                PositionAux = VALUES(PositionAux),
-                SiCcode = VALUES(SiCcode),
-                situationregistration = 'A',
-                dateregistration = VALUES(dateregistration)
+        # 4a) UPDATE — somente PNs existentes
+        logger.info("Atualizando produtos existentes...")
+        update_sql = """
+            UPDATE whsproducts w
+            JOIN staging_unique s ON s.PN = w.PN
+            SET
+                w.Description = s.Description,
+                w.Position = s.Position,
+                w.PositionAux = s.PositionAux,
+                w.SiCcode = s.SiCcode,
+                w.situationregistration = 'A',
+                w.dateregistration = NOW()
+            WHERE w.situationregistration <> 'E'
         """
-        cursor.execute(merge_sql)
+        cursor.execute(update_sql)
+        conn.commit()
+
+        # 4b) INSERT — somente PNs inexistentes
+        logger.info("Inserindo novos produtos...")
+        insert_sql = """
+            INSERT INTO whsproducts
+                (PN, Description, Position, PositionAux, SiCcode, situationregistration, dateregistration)
+            SELECT
+                s.PN,
+                s.Description,
+                s.Position,
+                s.PositionAux,
+                s.SiCcode,
+                'I',
+                NOW()
+            FROM staging_unique s
+            LEFT JOIN whsproducts w ON w.PN = s.PN
+            WHERE w.PN IS NULL
+        """
+        cursor.execute(insert_sql)
         conn.commit()
 
         # 5) Limpar staging
         cursor.execute("TRUNCATE TABLE staging_products")
         conn.commit()
 
-        # 6) Retorno final
         result = {
             "status": "success",
             "total_recebido": total,
@@ -172,6 +190,7 @@ def receber_produtos(request: ProdutosRequest, db: Session = Depends(get_db)):
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @products_rp.post("/update_positions")
 def update_positions_run(atualizar: bool = False):
