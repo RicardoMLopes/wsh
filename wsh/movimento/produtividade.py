@@ -32,6 +32,7 @@ def get_produtividade(
     sql = """
         SELECT User_id,
                COUNT(id) AS Linhas,
+               COUNT(DISTINCT PN) AS LinhasPN,
                SUM(RevisedQty) AS Pecas
     """
 

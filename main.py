@@ -12,11 +12,12 @@ from wsh.movimento.produtividade import produtividade_rp
 from wsh.movimento.romaneio import moviment_rp
 from wsh.user.login import login_rp
 from wsh.user.user import user_rp
+from models import __all__, Version
+
+app = FastAPI()
 
 # Cria tabelas (se quiser)
 Base.metadata.create_all(bind=engine)
-
-app = FastAPI()
 
 
 app.include_router(login_rp, prefix="", tags=["Login"])
@@ -44,6 +45,28 @@ def get_db():
     finally:
         db.close()
 
+@app.on_event("startup")
+def startup_event():
+    db = SessionLocal()
+    try:
+        last_version = db.query(Version).order_by(Version.id.desc()).first()
+
+        if last_version:
+            # Atualiza a versão existente
+            last_version.number += 1
+            db.commit()
+            db.refresh(last_version)
+            print(f"🚀 Versão atualizada para {last_version.number}")
+        else:
+            # Cria a primeira versão
+            new_version = Version(number=1)
+            db.add(new_version)
+            db.commit()
+            db.refresh(new_version)
+            print(f"🚀 Primeira versão registrada: {new_version.number}")
+
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     import uvicorn

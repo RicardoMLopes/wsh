@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
@@ -136,3 +136,54 @@ def reversal_movement(data: ReversalMovementModel, db: Session = Depends(get_db)
             "success": False,
             "error": str(e)
         }
+
+# =======================================================================================
+#
+# =======================================================================================
+class PutawayRequest(BaseModel):
+    reference: str
+    waybill: str
+
+@cancelputway_rp.post("/putaway/reset-date-process")
+def reset_date_process(
+    data: PutawayRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+
+        sql1 = text("""
+        UPDATE whsproductsputaway
+           SET DateProcessEnd = NULL
+         WHERE `Reference` = :ref
+           AND `Waybill`  = :waybill
+        """)
+
+        sql2 = text("""
+        UPDATE whsproductsputawaylog
+           SET DateProcessEnd = NULL
+         WHERE `Reference` = :ref
+           AND `Waybill`  = :waybill
+        """)
+
+        params = {
+            "ref": data.reference,
+            "waybill": data.waybill
+        }
+
+        r1 = db.execute(sql1, params).rowcount
+        r2 = db.execute(sql2, params).rowcount
+
+        db.commit()
+
+
+
+        return {
+            "success": True,
+            "rows_affected": r1 + r2
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
