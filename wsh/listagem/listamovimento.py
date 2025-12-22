@@ -6,7 +6,7 @@ import logging
 from pydantic import BaseModel
 from connection.db_connection import SessionLocal
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date
 import json
 
 listagem_rp = APIRouter()
@@ -22,6 +22,40 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+
+CAMPOS_DATA_SEM_HORA = {"grn1", "grn3"}
+CAMPOS_DATA_COM_HORA = {
+    "datecreate",
+    "aaf",
+    "DateProcessStart",
+    "DateProcessEnd",
+    "dateregistration"
+}
+
+def formatar_datas(row_dict: dict):
+    for campo in CAMPOS_DATA_SEM_HORA | CAMPOS_DATA_COM_HORA:
+        valor = row_dict.get(campo)
+
+        if not valor:
+            continue
+
+        try:
+            if isinstance(valor, (datetime, date)):
+                dt = valor
+            else:
+                dt = datetime.fromisoformat(str(valor))
+
+            if campo in CAMPOS_DATA_SEM_HORA:
+                row_dict[campo] = dt.strftime("%d/%m/%Y")
+            else:
+                row_dict[campo] = dt.strftime("%d/%m/%Y %H:%M:%S")
+
+        except Exception:
+            pass  # mantém o valor original se não conseguir converter
+
+    return row_dict
 
 @listagem_rp.get("/listageral")
 def get_listageral(
@@ -103,6 +137,40 @@ def get_listageral(
 
     logger.info(f"🟦 SQL Streaming:\n{sql}")
 
+    from datetime import datetime, date
+
+    CAMPOS_DATA_SEM_HORA = {"grn1", "grn3"}
+    CAMPOS_DATA_COM_HORA = {
+        "datecreate",
+        "aaf",
+        "dateregistration",
+        "DateProcessStart",
+        "DateProcessEnd"
+    }
+
+    def formatar_datas(row_dict: dict):
+        for campo in CAMPOS_DATA_SEM_HORA | CAMPOS_DATA_COM_HORA:
+            valor = row_dict.get(campo)
+
+            if not valor:
+                continue
+
+            try:
+                if isinstance(valor, (datetime, date)):
+                    dt = valor
+                else:
+                    dt = datetime.fromisoformat(str(valor))
+
+                if campo in CAMPOS_DATA_SEM_HORA:
+                    row_dict[campo] = dt.strftime("%d/%m/%Y")
+                else:
+                    row_dict[campo] = dt.strftime("%d/%m/%Y %H:%M:%S")
+
+            except Exception:
+                pass
+
+        return row_dict
+
     def stream():
         yield b'{"success": true, "data": ['
 
@@ -113,7 +181,11 @@ def get_listageral(
             if not first:
                 yield b","
             first = False
-            yield json.dumps(dict(row._mapping), default=str).encode("utf-8")
+
+            row_dict = dict(row._mapping)
+            row_dict = formatar_datas(row_dict)
+
+            yield json.dumps(row_dict, default=str).encode("utf-8")
 
         yield b"]}"
 
@@ -121,6 +193,7 @@ def get_listageral(
         stream(),
         media_type="application/json"
     )
+
 
 # =========================================================================
 #

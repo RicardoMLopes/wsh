@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
 from connection.db_connection import SessionLocal
+from datetime import datetime, date
 
 acompanhamento_rp = APIRouter()
 
@@ -16,6 +17,37 @@ def get_db():
     finally:
         db.close()
 
+CAMPOS_DATA_SEM_HORA = {"grn1", "grn3"}
+CAMPOS_DATA_COM_HORA = {
+    "datecreate",
+    "aaf",
+    "DateProcessStart",
+    "DateProcessEnd",
+    "dateregistration"
+}
+
+def formatar_datas(row_dict: dict):
+    for campo in CAMPOS_DATA_SEM_HORA | CAMPOS_DATA_COM_HORA:
+        valor = row_dict.get(campo)
+
+        if not valor:
+            continue
+
+        try:
+            if isinstance(valor, (datetime, date)):
+                dt = valor
+            else:
+                dt = datetime.fromisoformat(str(valor))
+
+            if campo in CAMPOS_DATA_SEM_HORA:
+                row_dict[campo] = dt.strftime("%d/%m/%Y")
+            else:
+                row_dict[campo] = dt.strftime("%d/%m/%Y %H:%M:%S")
+
+        except Exception:
+            pass  # mantém o valor original se não conseguir converter
+
+    return row_dict
 
 @acompanhamento_rp.get("/acompanhamento")
 def get_acompanhamento(
@@ -70,7 +102,6 @@ def get_acompanhamento(
             Rom.rnc
     """
 
-    # 🔽 ORDENACAO
     if ordenacao == 0:
         sql += " ORDER BY DtLanc, Log.User_id "
     else:
@@ -78,13 +109,49 @@ def get_acompanhamento(
 
     logger.info(f"🔍 SQL Gerado Acompanhamento: {sql}")
 
-    # Executa query
     result = db.execute(
         text(sql),
         {"dataini": dataini, "datafim": datafim}
     ).fetchall()
 
-    dados = [dict(r._mapping) for r in result]
+    from datetime import datetime, date
+
+    CAMPOS_DATA_SEM_HORA = {"grn1", "grn3"}
+    CAMPOS_DATA_COM_HORA = {
+        "DtCreat",
+        "aaf",
+        "DtIni",
+        "DtFim"
+    }
+
+    CAMPOS_DATA_SO_DATA = {"DtLanc"}
+
+    def formatar_datas(row_dict: dict):
+        for campo, valor in row_dict.items():
+            if not valor:
+                continue
+
+            try:
+                if isinstance(valor, (datetime, date)):
+                    dt = valor
+                else:
+                    dt = datetime.fromisoformat(str(valor))
+
+                if campo in CAMPOS_DATA_SEM_HORA or campo in CAMPOS_DATA_SO_DATA:
+                    row_dict[campo] = dt.strftime("%d/%m/%Y")
+                elif campo in CAMPOS_DATA_COM_HORA:
+                    row_dict[campo] = dt.strftime("%d/%m/%Y %H:%M:%S")
+
+            except Exception:
+                pass
+
+        return row_dict
+
+    dados = []
+    for r in result:
+        row_dict = dict(r._mapping)
+        row_dict = formatar_datas(row_dict)
+        dados.append(row_dict)
 
     logger.info(f"🚀 Registros encontrados: {len(dados)}")
 
@@ -92,3 +159,4 @@ def get_acompanhamento(
         "success": True,
         "data": dados
     }
+
