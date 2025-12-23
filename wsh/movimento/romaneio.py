@@ -1008,6 +1008,7 @@ def import_whsaurora071(
 
         db.commit()
 
+
         return {
             "status": "ok",
             "records": len(itens)
