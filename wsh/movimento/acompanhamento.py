@@ -17,38 +17,6 @@ def get_db():
     finally:
         db.close()
 
-CAMPOS_DATA_SEM_HORA = {"grn1", "grn3"}
-CAMPOS_DATA_COM_HORA = {
-    "datecreate",
-    "aaf",
-    "DateProcessStart",
-    "DateProcessEnd",
-    "dateregistration"
-}
-
-def formatar_datas(row_dict: dict):
-    for campo in CAMPOS_DATA_SEM_HORA | CAMPOS_DATA_COM_HORA:
-        valor = row_dict.get(campo)
-
-        if not valor:
-            continue
-
-        try:
-            if isinstance(valor, (datetime, date)):
-                dt = valor
-            else:
-                dt = datetime.fromisoformat(str(valor))
-
-            if campo in CAMPOS_DATA_SEM_HORA:
-                row_dict[campo] = dt.strftime("%d/%m/%Y")
-            else:
-                row_dict[campo] = dt.strftime("%d/%m/%Y %H:%M:%S")
-
-        except Exception:
-            pass  # mantém o valor original se não conseguir converter
-
-    return row_dict
-
 @acompanhamento_rp.get("/acompanhamento")
 def get_acompanhamento(
     dataini: str,

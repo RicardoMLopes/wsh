@@ -6,7 +6,7 @@ from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
 from datetime import datetime
 import logging, time
-
+from sqlalchemy import text
 
 moviment_rp = APIRouter()
 
@@ -969,4 +969,50 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         except:
             pass
 
+#====================================================
+#            Aurora071
+#----------------------------------------------------
+class Aurora071Item(BaseModel):
+    DocType: str
+    FileRef: str
+    Item: str
+    StockGoodsInwards: str
+    Receiptdate: str
+    TXIssuedate: str
+    GRNNo: str
+    PMP: str
 
+@moviment_rp.post("/whsaurora071/import")
+def import_whsaurora071(
+    itens: list[Aurora071Item],
+    db: Session = Depends(get_db)
+):
+    try:
+        # DELETE
+        db.execute(text("DELETE FROM whsaurora071"))
+
+        # INSERT
+        sql = text("""
+            INSERT INTO whsaurora071
+            (DocType, FileRef, Item, StockGoodsInwards,
+             Receiptdate, TXIssuedate, GRNNo, PMP,
+             situationregistration, dateregistration)
+            VALUES
+            (:DocType, :FileRef, :Item, :StockGoodsInwards,
+             :Receiptdate, :TXIssuedate, :GRNNo, :PMP,
+             'I', NOW())
+        """)
+
+        for item in itens:
+            db.execute(sql, item.model_dump())
+
+        db.commit()
+
+        return {
+            "status": "ok",
+            "records": len(itens)
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
