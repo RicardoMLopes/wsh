@@ -80,10 +80,11 @@ def save_user(
             UPDATE caduser
             SET newpassword = :senha,
                 usertype = :usertype
-            WHERE users = :usuario
+            WHERE users = :usuario AND id= :id
         """)
 
         db.execute(sql_update, {
+            "id": id,
             "senha": senha_criptografada,
             "usertype": tipo_usuario,
             "usuario": usuario
@@ -95,13 +96,12 @@ def save_user(
     elif modo == "insert":
         sql_insert = text("""
             INSERT INTO caduser 
-                (ID, users, newpassword, usertype, situationregistration, dateregistration)
+                ( users, newpassword, usertype, situationregistration, dateregistration)
             VALUES 
-                (:id, :usuario, :senha, :usertype, 'I', NOW())
+                (:usuario, :senha, :usertype, 'I', NOW())
         """)
 
         db.execute(sql_insert, {
-            "id": id,
             "usuario": usuario,
             "senha": senha_criptografada,
             "usertype": tipo_usuario

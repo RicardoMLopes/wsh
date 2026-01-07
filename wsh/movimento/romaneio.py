@@ -378,7 +378,7 @@ def processar_aurora071(
                 INNER JOIN whsaurora071 a
                 ON p.reference = SUBSTRING(a.FileRef,1,6)
                 AND p.PN = a.Item
-                WHERE (p.grn3 IS NULL OR p.grn3 <> a.Receiptdate)
+                WHERE (StockGoodsInwards = 'S') AND (p.grn3 IS NULL OR p.grn3 <> a.Receiptdate)
                 {condicao}
                 LIMIT {{lote}}
             ) AS t ON p.Id = t.Id
@@ -397,22 +397,21 @@ def processar_aurora071(
                 SELECT p.Id
                 FROM whsproductsputaway p
                 INNER JOIN whsaurora071 a
-                ON p.reference = SUBSTRING(a.FileRef,1,6)
-                AND p.PN = a.Item
+                ON p.reference = SUBSTRING(a.FileRef,1,6)                
                 WHERE (p.GRN IS NULL OR p.GRN <> a.StockGoodsInwards)
                 {condicao}
                 LIMIT {{lote}}
             ) AS t ON p.Id = t.Id
             INNER JOIN whsaurora071 a
-            ON p.reference = SUBSTRING(a.FileRef,1,6)
-            AND p.PN = a.Item
-            SET p.GRN = a.StockGoodsInwards
+            ON p.reference = SUBSTRING(a.FileRef,1,6)            
+            SET p.GRN = a.GRNNo
         """
+        # AND p.PN = a.Item
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn")
 
         # 🔹 Atualizações de log
         if grn_log:
-            for campo, coluna in [("grn1", "TXIssuedate"), ("grn3", "Receiptdate"), ("GRN", "StockGoodsInwards")]:
+            for campo, coluna in [("grn1", "TXIssuedate"), ("grn3", "Receiptdate"), ("GRN", "GRNNo")]:
                 condicao = "" if update_geral else f"AND (l.{campo}='' OR l.{campo} IS NULL)"
                 sql_template = f"""
                     UPDATE whsproductsputawaylog l
