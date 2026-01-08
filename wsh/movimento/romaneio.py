@@ -310,27 +310,40 @@ def listar_tarefas(
 #   IMPORTAÇÃO aurora071
 #--------------------------------------------------------------------------------------
 
-def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=10000):
+import time
+
+def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=5000, lote_min=500):
     total_afetados = 0
     lote_num = 1
+
     while True:
         sql = sql_template.format(lote=lote)
         try:
-            # logging.info("Iniciando [%s] lote %d...", chave, lote_num)
             start = time.time()
             afetados = cursor.execute(sql)
             conn.commit()
             duration = time.time() - start
-            # logging.info("Finalizado [%s] lote %d: %s registros afetados em %.2f segundos", chave, lote_num, afetados, duration)
+
             total_afetados += afetados
+            print(f"Lote {lote_num} com {lote} registros: {afetados} afetados em {duration:.2f}s")
+
             if afetados == 0:
                 break
             lote_num += 1
+
         except Exception as e:
             conn.rollback()
-            resultados[chave] = f"erro: {str(e)}"
-            # logging.error("Erro ao executar [%s] lote %d: %s", chave, lote_num, e)
-            break
+            print(f"Erro no lote {lote_num} com {lote} registros: {e}")
+
+            # Se ainda dá para reduzir o lote, tenta novamente
+            if lote > lote_min:
+                lote = max(lote // 2, lote_min)
+                print(f"Reduzindo lote para {lote} e tentando novamente...")
+                continue
+            else:
+                resultados[chave] = f"erro: {str(e)}"
+                break
+
     resultados[chave] = total_afetados
 
 #=============================================================================================
@@ -348,6 +361,7 @@ def processar_aurora071(
 
     try:
         # 🔹 Atualização GRN1
+        logger.info("➡️ Iniciando atualização GRN1...")
         condicao = "" if update_geral else "AND (p.grn1='' OR p.grn1 IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
@@ -355,20 +369,22 @@ def processar_aurora071(
                 SELECT p.Id
                 FROM whsproductsputaway p
                 INNER JOIN whsaurora071 a
-                ON p.reference = SUBSTRING(a.FileRef,1,6)
+                ON p.reference = a.FileRefPrefix
                 AND p.PN = a.Item
                 WHERE (p.grn1 IS NULL OR p.grn1 <> a.TXIssuedate)
                 {condicao}
                 LIMIT {{lote}}
             ) AS t ON p.Id = t.Id
             INNER JOIN whsaurora071 a
-            ON p.reference = SUBSTRING(a.FileRef,1,6)
+            ON p.reference = a.FileRefPrefix
             AND p.PN = a.Item
             SET p.grn1 = a.TXIssuedate
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn1")
+        logger.info("✅ Atualização GRN1 concluída.")
 
         # 🔹 Atualização GRN3
+        logger.info("➡️ Iniciando atualização GRN3...")
         condicao = "" if update_geral else "AND (p.grn3='' OR p.grn3 IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
@@ -376,42 +392,49 @@ def processar_aurora071(
                 SELECT p.Id
                 FROM whsproductsputaway p
                 INNER JOIN whsaurora071 a
-                ON p.reference = SUBSTRING(a.FileRef,1,6)
+                ON p.reference = a.FileRefPrefix
                 AND p.PN = a.Item
                 WHERE (StockGoodsInwards = 'S') AND (p.grn3 IS NULL OR p.grn3 <> a.Receiptdate)
                 {condicao}
                 LIMIT {{lote}}
             ) AS t ON p.Id = t.Id
             INNER JOIN whsaurora071 a
-            ON p.reference = SUBSTRING(a.FileRef,1,6)
+            ON p.reference = a.FileRefPrefix
             AND p.PN = a.Item
             SET p.grn3 = a.Receiptdate
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn3")
+        logger.info("✅ Atualização GRN3 concluída.")
 
-        # 🔹 Atualização GRN (usando StockGoodsInwards)
+        # 🔹 Atualização GRN
+        logger.info("➡️ Iniciando atualização GRN...")
         condicao = "" if update_geral else "AND (p.GRN='' OR p.GRN IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
-            JOIN (
-                SELECT p.Id
-                FROM whsproductsputaway p
+                JOIN (
+                    SELECT DISTINCT p.Id
+                    FROM whsproductsputaway p
+                    INNER JOIN whsaurora071 a
+                      ON p.reference = a.FileRefPrefix
+                     AND p.PN = a.Item
+                     AND a.StockGoodsInwards in('G', 'S')
+                    WHERE (p.GRN IS NULL OR p.GRN <> a.GRNNo)
+                    {condicao}
+                    LIMIT {{lote}}
+                ) AS t ON p.Id = t.Id
                 INNER JOIN whsaurora071 a
-                ON p.reference = SUBSTRING(a.FileRef,1,6)                
-                WHERE (p.GRN IS NULL OR p.GRN <> a.StockGoodsInwards)
-                {condicao}
-                LIMIT {{lote}}
-            ) AS t ON p.Id = t.Id
-            INNER JOIN whsaurora071 a
-            ON p.reference = SUBSTRING(a.FileRef,1,6)            
-            SET p.GRN = a.GRNNo
+                  ON p.reference = a.FileRefPrefix
+                 AND p.PN = a.Item
+                 AND a.StockGoodsInwards in('G', 'S')
+                SET p.GRN = a.GRNNo
         """
-        # AND p.PN = a.Item
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn")
+        logger.info("✅ Atualização GRN concluída.")
 
         # 🔹 Atualizações de log
         if grn_log:
             for campo, coluna in [("grn1", "TXIssuedate"), ("grn3", "Receiptdate"), ("GRN", "GRNNo")]:
+                logger.info(f"➡️ Iniciando atualização de log {campo}...")
                 condicao = "" if update_geral else f"AND (l.{campo}='' OR l.{campo} IS NULL)"
                 sql_template = f"""
                     UPDATE whsproductsputawaylog l
@@ -419,18 +442,24 @@ def processar_aurora071(
                         SELECT l.Id
                         FROM whsproductsputawaylog l
                         INNER JOIN whsaurora071 a
-                        ON l.reference = SUBSTRING(a.FileRef,1,6)
+                        ON p.reference = a.FileRefPrefix
                         AND l.PN = a.Item
                         WHERE (l.{campo} IS NULL OR l.{campo} <> a.{coluna})
                         {condicao}
                         LIMIT {{lote}}
                     ) AS t ON l.Id = t.Id
                     INNER JOIN whsaurora071 a
-                    ON l.reference = SUBSTRING(a.FileRef,1,6)
+                    ON p.reference = a.FileRefPrefix
                     AND l.PN = a.Item
                     SET l.{campo} = a.{coluna}
                 """
                 executar_sql_em_lotes(cursor, conn, sql_template, resultados, f"log_{campo}")
+                logger.info(f"✅ Atualização de log {campo} concluída.")
+
+        logger.info("➡️ Limpando tabela whsaurora071...")
+        cursor.execute("TRUNCATE TABLE whsaurora071;")
+        conn.commit()
+        logger.info("✅ Tabela whsaurora071 limpa.")
 
     finally:
         cursor.close()
@@ -475,23 +504,25 @@ def processar_auroraAAF(
                     condicao = "" if update_geral else " AND (whsproductsputaway.aaf='' OR whsproductsputaway.aaf IS NULL)"
                     sql = f"""
                         UPDATE whsproductsputaway
-                        SET aaf = '{linha["aaf"]}',
-                            Criticality = '{linha.get("criticality","")}'
-                        WHERE reference = '{linha["reference"]}'
+                        SET aaf = %s,
+                            Criticality = %s
+                        WHERE reference = %s
                         {condicao}
                     """
-                    executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}")
+                    params = (linha["aaf"], linha.get("criticality", ""), linha["reference"])
+                    executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}", params)
 
                     if aaf_log:
                         condicao = "" if update_geral else " AND (whsproductsputawaylog.aaf='' OR whsproductsputawaylog.aaf IS NULL)"
                         sql = f"""
                             UPDATE whsproductsputawaylog
-                            SET aaf = '{linha["aaf"]}',
-                                Criticality = '{linha.get("criticality","")}'
-                            WHERE reference = '{linha["reference"]}'
+                            SET aaf = %s,
+                                Criticality = %s
+                            WHERE reference = %s
                             {condicao}
                         """
-                        executar_sql(cursor, conn, sql, resultados, f"log_aaf_tela_{idx}")
+                        params = (linha["aaf"], linha.get("criticality", ""), linha["reference"])
+                        executar_sql(cursor, conn, sql, resultados, f"log_aaf_tela_{idx}", params)
 
         else:
             # 🔹 Atualização em massa (JOIN com whsauroraAAF)
@@ -517,6 +548,10 @@ def processar_auroraAAF(
                     {condicao}
                 """
                 executar_sql(cursor, conn, sql, resultados, "log_aaf_mass")
+
+        # 🔹 Limpeza da tabela auxiliar (se for temporária)
+        cursor.execute("TRUNCATE TABLE whsauroraAAF;")
+        conn.commit()
 
     finally:
         cursor.close()
@@ -975,24 +1010,34 @@ class Aurora071Item(BaseModel):
     DocType: str
     FileRef: str
     Item: str
-    StockGoodsInwards: str
-    Receiptdate: str
-    TXIssuedate: str
-    GRNNo: str
-    PMP: str
+    StockGoodsInwards: Optional[str]
+    Receiptdate: Optional[str]
+    TXIssuedate: Optional[str]
+    GRNNo: Optional[str]
+    PMP: Optional[str]
 
+
+
+def br_to_us(date_str: str) -> str:
+    """Converte 'DD/MM/YYYY' para 'YYYY-MM-DD'."""
+    try:
+        return datetime.strptime(date_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except Exception:
+        return date_str  # se já estiver no formato certo, retorna como está
+
+# ============ ROTA ===================================
 @moviment_rp.post("/whsaurora071/import")
 def import_whsaurora071(
     itens: list[Aurora071Item],
     db: Session = Depends(get_db)
 ):
     try:
-        # DELETE
-        db.execute(text("DELETE FROM whsaurora071"))
+        # Limpa a tabela antes da importação
+        db.execute(text("TRUNCATE TABLE whsaurora071"))
 
-        # INSERT
+        # SQL ajustado com INSERT IGNORE
         sql = text("""
-            INSERT INTO whsaurora071
+            INSERT IGNORE INTO whsaurora071
             (DocType, FileRef, Item, StockGoodsInwards,
              Receiptdate, TXIssuedate, GRNNo, PMP,
              situationregistration, dateregistration)
@@ -1002,17 +1047,39 @@ def import_whsaurora071(
              'I', NOW())
         """)
 
+        chaves = set()
+        registros_salvos = 0
+
         for item in itens:
+            # Chave composta com todos os campos recebidos
+            chave = (
+                item.DocType,
+                item.FileRef,
+                item.Item,
+                item.StockGoodsInwards,
+                item.Receiptdate,
+                item.TXIssuedate,
+                item.GRNNo,
+                item.PMP
+            )
+
+            if chave in chaves:
+                # Ignora duplicados silenciosamente
+                continue
+            chaves.add(chave)
+
             db.execute(sql, item.model_dump())
+            registros_salvos += 1
 
         db.commit()
 
-
         return {
             "status": "ok",
-            "records": len(itens)
+            "records": registros_salvos
         }
 
     except Exception as e:
         db.rollback()
+        import traceback
+        print("Erro na importação:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
