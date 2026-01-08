@@ -470,18 +470,24 @@ def processar_aurora071(
 #========================================================================================================
 #         MOVIMENTO auroraAAF
 #--------------------------------------------------------------------------------------------------------
-def executar_sql(cursor, conn, sql, resultados, chave):
+def executar_sql(cursor, conn, sql, resultados, chave, params=None):
     try:
-        # logging.info("Iniciando [%s]...", chave)
         start = time.time()
-        cursor.execute(sql)
+
+        if params is not None:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+
         conn.commit()
         duration = time.time() - start
         resultados[chave] = cursor.rowcount
-        # logging.info("Finalizado [%s]: %s registros afetados em %.2f segundos",chave, cursor.rowcount, duration)
+
     except Exception as e:
         conn.rollback()
         resultados[chave] = f"erro: {str(e)}"
+        raise
+
         # logging.error("Erro ao executar [%s]: %s", chave, e)
 
 @moviment_rp.post("/auroraAAF/process")
