@@ -213,6 +213,18 @@ class GravaGRNRequest(BaseModel):
     grn: Optional[str] = None
     itens: List[GravaGRNItem]
 
+def converter_data(valor: str) -> Optional[str]:
+    """
+    Converte data de 'DD/MM/YYYY' para 'YYYY-MM-DD'.
+    Retorna None se o valor for vazio ou inválido.
+    """
+    if not valor or valor.strip() in ["", "  /  /    "]:
+        return None
+    try:
+        return datetime.strptime(valor.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
 @listagem_rp.post("/grava-grn")
 def grava_grn(dados: GravaGRNRequest, db: Session = Depends(get_db)):
     try:
@@ -223,31 +235,29 @@ def grava_grn(dados: GravaGRNRequest, db: Session = Depends(get_db)):
         params = {}
 
         if dados.grn1:
-            campos.append("GRN1 = :grn1")
-            params["grn1"] = dados.grn1
+            data_convertida = converter_data(dados.grn1)
+            if data_convertida:
+                campos.append("GRN1 = :grn1")
+                params["grn1"] = data_convertida
 
         if dados.grn3:
-            campos.append("GRN3 = :grn3")
-            params["grn3"] = dados.grn3
+            data_convertida = converter_data(dados.grn3)
+            if data_convertida:
+                campos.append("GRN3 = :grn3")
+                params["grn3"] = data_convertida
 
         # 🔹 CONVERSÃO DE DATA
         if dados.processdate:
-            try:
-                data_convertida = datetime.strptime(
-                    dados.processdate, "%d/%m/%Y"
-                ).strftime("%Y-%m-%d")
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Formato de data inválido. Use DD/MM/AAAA"
-                )
-
-            campos.append("processdate = :processdate")
-            params["processdate"] = data_convertida
+            data_convertida = converter_data(dados.processdate)
+            if data_convertida:
+                campos.append("processdate = :processdate")
+                params["processdate"] = data_convertida
 
         if dados.aaf:
-            campos.append("AAF = :aaf")
-            params["aaf"] = dados.aaf
+            data_convertida = converter_data(dados.aaf)
+            if data_convertida:
+                campos.append("AAF = :aaf")
+                params["aaf"] = data_convertida
 
         if dados.rnc:
             campos.append("RNC = :rnc")

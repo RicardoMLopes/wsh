@@ -489,7 +489,7 @@ def executar_sql(cursor, conn, sql, resultados, chave, params=None):
         resultados[chave] = f"erro: {str(e)}"
         raise
 
-        # logging.error("Erro ao executar [%s]: %s", chave, e)
+        logging.error("Erro ao executar [%s]: %s", chave, e)
 
 @moviment_rp.post("/auroraAAF/process")
 def processar_auroraAAF(
