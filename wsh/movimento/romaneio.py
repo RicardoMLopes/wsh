@@ -266,7 +266,8 @@ def listar_tarefas(
         params.extend([data_ini, data_fim])
 
     # group by
-    sql += " GROUP BY Reference, Waybill, operator_id, IFNULL(grn1,1), grn1"
+    sql += " GROUP BY Reference, Waybill, operator_id"
+    # , IFNULL(grn1, 1), grn1 | Tirou porque não esta trazendo, foi implementado no access 09/01/2026
 
     # ordenação
     if ordenacao == 0:
