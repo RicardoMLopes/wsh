@@ -311,8 +311,6 @@ def listar_tarefas(
 #   IMPORTAÇÃO aurora071
 #--------------------------------------------------------------------------------------
 
-import time
-
 def executar_sql_em_lotes(cursor, conn, sql_template, resultados, chave, lote=5000, lote_min=500):
     total_afetados = 0
     lote_num = 1
@@ -471,101 +469,157 @@ def processar_aurora071(
 #========================================================================================================
 #         MOVIMENTO auroraAAF
 #--------------------------------------------------------------------------------------------------------
+
+# 🔹 Função para converter datas para formato MySQL
+def converter_data(valor: str) -> Optional[str]:
+    if not valor or valor.strip() == "":
+        return None
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%d-%m-%Y %H:%M:%S"]:
+        try:
+            dt = datetime.strptime(valor.strip(), fmt)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")  # formato aceito pelo MySQL
+        except ValueError:
+            continue
+    return None
+
 def executar_sql(cursor, conn, sql, resultados, chave, params=None):
     try:
         start = time.time()
-
-        if params is not None:
-            cursor.execute(sql, params)
-        else:
-            cursor.execute(sql)
-
+        logging.info(f"Executando SQL [{chave}]: {sql} | Params: {params}")
+        cursor.execute(sql, params) if params is not None else cursor.execute(sql)
         conn.commit()
         duration = time.time() - start
-        resultados[chave] = cursor.rowcount
-
+        afetados = cursor.rowcount
+        resultados[chave] = {
+            "afetados": afetados,
+            "sql": sql,
+            "params": params,
+            "tempo_execucao": f"{duration:.4f}s"
+        }
+        logging.info("Execução [%s] afetou %s registros em %s",
+                     chave, afetados, f"{duration:.4f}s")
     except Exception as e:
         conn.rollback()
-        resultados[chave] = f"erro: {str(e)}"
+        resultados[chave] = {"erro": str(e), "sql": sql, "params": params}
+        logging.error("Erro ao executar [%s]: %s | Params: %r", chave, e, params)
         raise
-
-        logging.error("Erro ao executar [%s]: %s", chave, e)
 
 @moviment_rp.post("/auroraAAF/process")
 def processar_auroraAAF(
     update_geral: bool = False,
     aaf_log: bool = False,
     aaf_tela: bool = False,
-    linhas: list[dict] = None,   # se vier da tela, cada linha tem {reference, aaf, criticality}
+    linhas: list[dict] = None,
     db: Session = Depends(get_db)
 ):
     conn = db.connection().connection
     cursor = conn.cursor()
     resultados = {}
+    total_afetados = 0
 
     try:
+        # 🔹 Criar tabela temporária
+        cursor.execute("""
+            CREATE TEMPORARY TABLE IF NOT EXISTS whsauroraAAF_temp (
+                reference VARCHAR(30) NOT NULL,
+                aaf_raw VARCHAR(50) NULL,
+                criticality VARCHAR(50) NULL
+            )
+        """)
+
+        # 🔹 Inserir todos os dados primeiro
+        if linhas:
+            for linha in linhas:
+                aaf_val = linha.get("aaf")
+                criticality = linha.get("criticality")
+                reference = linha.get("reference")
+
+                cursor.execute("""
+                    INSERT INTO whsauroraAAF_temp (reference, aaf_raw, criticality)
+                    VALUES (%s, %s, %s)
+                """, (reference, aaf_val, criticality))
+
+            conn.commit()
+
+        # 🔹 Atualização linha a linha (igual Delphi)
         if aaf_tela and linhas:
-            # 🔹 Atualização linha a linha (modo tela)
             for idx, linha in enumerate(linhas, start=1):
-                if linha.get("aaf"):
-                    condicao = "" if update_geral else " AND (whsproductsputaway.aaf='' OR whsproductsputaway.aaf IS NULL)"
-                    sql = f"""
-                        UPDATE whsproductsputaway
-                        SET aaf = %s,
-                            Criticality = %s
-                        WHERE reference = %s
-                        {condicao}
+                reference = linha.get("reference")
+                aaf_val = linha.get("aaf")
+                criticality = linha.get("criticality")
+
+                sql = """
+                    UPDATE whsproductsputaway
+                    SET whsproductsputaway.aaf = %s,
+                        whsproductsputaway.Criticality = %s
+                    WHERE whsproductsputaway.Reference = %s
+                """
+                params = (aaf_val, criticality, reference)
+
+                if not update_geral:
+                    sql += "AND whsproductsputaway.aaf IS NULL"
+
+                executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}", params)
+                total_afetados += resultados[f"aaf_tela_{idx}"]["afetados"]
+
+                if aaf_log:
+                    sql = """
+                        UPDATE whsproductsputawaylog
+                        SET whsproductsputawaylog.aaf = %s,
+                            whsproductsputawaylog.Criticality = %s
+                        WHERE whsproductsputawaylog.Reference = %s
                     """
-                    params = (linha["aaf"], linha.get("criticality", ""), linha["reference"])
-                    executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}", params)
+                    params = (aaf_val, criticality, reference)
 
-                    if aaf_log:
-                        condicao = "" if update_geral else " AND (whsproductsputawaylog.aaf='' OR whsproductsputawaylog.aaf IS NULL)"
-                        sql = f"""
-                            UPDATE whsproductsputawaylog
-                            SET aaf = %s,
-                                Criticality = %s
-                            WHERE reference = %s
-                            {condicao}
-                        """
-                        params = (linha["aaf"], linha.get("criticality", ""), linha["reference"])
-                        executar_sql(cursor, conn, sql, resultados, f"log_aaf_tela_{idx}", params)
+                    if not update_geral:
+                        sql += "AND whsproductsputawaylog.aaf IS NULL"
 
+                    executar_sql(cursor, conn, sql, resultados, f"log_aaf_tela_{idx}", params)
+                    total_afetados += resultados[f"log_aaf_tela_{idx}"]["afetados"]
+
+        # 🔹 Atualização em massa (igual Delphi)
         else:
-            # 🔹 Atualização em massa (JOIN com whsauroraAAF)
-            condicao = "" if update_geral else " WHERE (whsproductsputaway.aaf='' OR whsproductsputaway.aaf IS NULL)"
-            sql = f"""
-                UPDATE whsproductsputaway
-                INNER JOIN whsauroraAAF
-                ON whsproductsputaway.reference = whsauroraAAF.reference
-                SET whsproductsputaway.aaf = whsauroraAAF.aaf,
-                    whsproductsputaway.Criticality = whsauroraAAF.Criticality
-                {condicao}
+            sql = """
+                UPDATE whsproductsputaway p
+                INNER JOIN whsauroraAAF_temp t ON p.reference = t.reference
+                SET p.aaf = t.aaf_raw,
+                    p.Criticality = t.criticality
             """
+            if not update_geral:
+                sql += " WHERE (p.aaf IS NULL)"
+
             executar_sql(cursor, conn, sql, resultados, "aaf_mass")
+            total_afetados += resultados["aaf_mass"]["afetados"]
 
             if aaf_log:
-                condicao = "" if update_geral else " WHERE (whsproductsputawaylog.aaf='' OR whsproductsputawaylog.aaf IS NULL)"
-                sql = f"""
-                    UPDATE whsproductsputawaylog
-                    INNER JOIN whsauroraAAF
-                    ON whsproductsputawaylog.reference = whsauroraAAF.reference
-                    SET whsproductsputawaylog.aaf = whsauroraAAF.aaf,
-                        whsproductsputawaylog.Criticality = whsauroraAAF.Criticality
-                    {condicao}
+                sql = """
+                    UPDATE whsproductsputawaylog l
+                    INNER JOIN whsauroraAAF_temp t ON l.reference = t.reference
+                    SET l.aaf = t.aaf_raw,
+                        l.Criticality = t.criticality
                 """
-                executar_sql(cursor, conn, sql, resultados, "log_aaf_mass")
+                if not update_geral:
+                    sql += " WHERE (l.aaf = '' OR l.aaf IS NULL)"
 
-        # 🔹 Limpeza da tabela auxiliar (se for temporária)
-        cursor.execute("TRUNCATE TABLE whsauroraAAF;")
+                executar_sql(cursor, conn, sql, resultados, "log_aaf_mass")
+                total_afetados += resultados["log_aaf_mass"]["afetados"]
+
+        # 🔹 Limpar tabela temporária
+        cursor.execute("DROP TEMPORARY TABLE IF EXISTS whsauroraAAF_temp;")
         conn.commit()
 
     finally:
         cursor.close()
         conn.close()
 
-    return {"status": "ok", "resultados": resultados}
-
+    return {
+        "status": "ok",
+        "total_afetados": total_afetados,
+        "detalhes": resultados
+    }
+#=====================================================================================================================
+#                            TAREFAS Atribuir Operador
+#---------------------------------------------------------------------------------------------------------------------
 @moviment_rp.post("/tarefas/atribuir-operador")
 def atribuir_operador(
     reference: str,
