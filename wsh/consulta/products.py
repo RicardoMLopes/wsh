@@ -1,6 +1,7 @@
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, APIRouter
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import text
 import traceback
 import logging
@@ -66,7 +67,6 @@ def products_putaway(
 ):
     db = SessionLocal()
     try:
-        # Construir SQL dinamicamente
         base_sql = """
             SELECT *
             FROM whsproductsputaway
@@ -87,15 +87,14 @@ def products_putaway(
             base_sql += " AND Position LIKE :position"
             params["position"] = f"%{position}%"
 
-        sql = text(base_sql)
-        result = db.execute(sql, params).fetchall()
-
-        if not result:
-            raise HTTPException(status_code=404, detail="Registro não encontrado")
+        result = db.execute(text(base_sql), params).fetchall()
 
         data = [dict(row._mapping) for row in result]
 
-        return {"status": "ok", "data": data}
+        return jsonable_encoder({
+            "status": "ok",
+            "data": data
+        })
 
     except Exception as e:
         traceback.print_exc()
@@ -103,3 +102,4 @@ def products_putaway(
 
     finally:
         db.close()
+
