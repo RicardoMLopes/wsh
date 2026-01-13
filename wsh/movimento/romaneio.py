@@ -149,6 +149,13 @@ def atualiza_posicao(db: Session = Depends(get_db)):
 #-------------=====================------------------------------------------
 #                  MOVIMENTO TAREFA
 #============================================================================
+def normaliza_data(valor):
+    if valor is None:
+        return None
+    if isinstance(valor, str) and valor.upper() == "NULL":
+        return None
+    return valor
+
 
 @moviment_rp.get("/tarefas")
 def listar_tarefas(
@@ -247,6 +254,10 @@ def listar_tarefas(
     if grn:
         sql += " AND GRN=%s"
         params.append(grn)
+
+    data_ini = normaliza_data(data_ini)
+    data_fim = normaliza_data(data_fim)
+
 
     # filtro de período (igual Delphi)
     if data_tipo and data_ini and data_fim:
