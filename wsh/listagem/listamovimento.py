@@ -33,6 +33,12 @@ CAMPOS_DATA_COM_HORA = {
     "DateProcessEnd",
     "dateregistration"
 }
+def normaliza_data(valor):
+    if valor is None:
+        return None
+    if isinstance(valor, str) and valor.upper() == "NULL":
+        return None
+    return valor
 
 def formatar_datas(row_dict: dict):
     for campo in CAMPOS_DATA_SEM_HORA | CAMPOS_DATA_COM_HORA:
@@ -119,6 +125,9 @@ def get_listageral(
         else:
             sql += " AND User_Id = :operador"
             params["operador"] = operador
+
+    dataini = normaliza_data(dataini)
+    datafim = normaliza_data(datafim)
 
     if filtro_data == 1 and dataini and datafim:
         # filtro de período (igual Delphi)
