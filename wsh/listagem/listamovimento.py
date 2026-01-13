@@ -70,6 +70,7 @@ def get_listageral(
     filtro_data: int = 0,
     dataini: str = "",
     datafim: str = "",
+    data_tipo: str = "",
     ordem: int = 0,
     db: Session = Depends(get_db)
 ):
@@ -120,8 +121,20 @@ def get_listageral(
             params["operador"] = operador
 
     if filtro_data == 1 and dataini and datafim:
-        campo = "datecreate" if tipo == "G" else "dateregistration"
-        sql += f" AND {campo} BETWEEN :dataini AND :datafim"
+        # filtro de período (igual Delphi)
+        if data_tipo and dataini and datafim:
+            if data_tipo == "datecreate":
+                sql += " AND datecreate BETWEEN %s AND %s"
+            elif data_tipo == "start":
+                sql += " AND DateProcessStart BETWEEN %s AND %s"
+            elif data_tipo == "end":
+                sql += " AND DateProcessEnd BETWEEN %s AND %s"
+            elif data_tipo == "aaf":
+                sql += " AND aaf BETWEEN %s AND %s"
+            elif data_tipo == "grn":
+                sql += " AND grn BETWEEN %s AND %s"
+            elif data_tipo == "grn3":
+                sql += " AND grn3 BETWEEN %s AND %s"
         params["dataini"] = dataini
         params["datafim"] = datafim
 
