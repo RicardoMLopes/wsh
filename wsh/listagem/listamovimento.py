@@ -124,17 +124,17 @@ def get_listageral(
         # filtro de período (igual Delphi)
         if data_tipo and dataini and datafim:
             if data_tipo == "datecreate":
-                sql += " AND datecreate BETWEEN %s AND %s"
+                sql += " AND datecreate BETWEEN :dataini AND :datafim"
             elif data_tipo == "start":
-                sql += " AND DateProcessStart BETWEEN %s AND %s"
+                sql += " AND DateProcessStart BETWEEN :dataini AND :datafim"
             elif data_tipo == "end":
-                sql += " AND DateProcessEnd BETWEEN %s AND %s"
+                sql += " AND DateProcessEnd BETWEEN :dataini AND :datafim"
             elif data_tipo == "aaf":
-                sql += " AND aaf BETWEEN %s AND %s"
+                sql += " AND aaf BETWEEN :dataini AND :datafim"
             elif data_tipo == "grn":
-                sql += " AND grn BETWEEN %s AND %s"
+                sql += " AND grn BETWEEN :dataini AND :datafim"
             elif data_tipo == "grn3":
-                sql += " AND grn3 BETWEEN %s AND %s"
+                sql += " AND grn3 BETWEEN :dataini AND :datafim"
         params["dataini"] = dataini
         params["datafim"] = datafim
 
