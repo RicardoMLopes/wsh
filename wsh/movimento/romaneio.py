@@ -195,7 +195,7 @@ def listar_tarefas(
                MAX(aaf) AS _aaf,
                MAX(rnc) AS _rnc,
                MIN(datecreate) AS _dCreat,
-               MAX(DateProcessStart) AS _DateProcessStart,
+               MIN(DateProcessStart) AS _DateProcessStart,
                MAX(DateProcessEnd) AS _DateProcessEnd,
                MIN(Criticality) AS _Criticality
         FROM whsproductsputaway
