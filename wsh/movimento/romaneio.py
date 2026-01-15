@@ -527,48 +527,60 @@ def processar_auroraAAF(
     cursor = conn.cursor()
     resultados = {}
     total_afetados = 0
+    conferencia = []
 
     try:
-        # 🔹 Criar tabela temporária
-        cursor.execute("""
-            CREATE TEMPORARY TABLE IF NOT EXISTS whsauroraAAF_temp (
-                reference VARCHAR(30) NOT NULL,
-                aaf_raw VARCHAR(50) NULL,
-                criticality VARCHAR(50) NULL
-            )
-        """)
+        cursor.execute("TRUNCATE TABLE whsauroraaaf")
+        conn.commit()
 
-        # 🔹 Inserir todos os dados primeiro
+        # ==================================================
+        # 1️⃣ INSERÇÃO NA whsauroraaaf (IGUAL DELPHI)
+        # ==================================================
         if linhas:
             for linha in linhas:
-                aaf_val = linha.get("aaf")
-                criticality = linha.get("criticality")
-                reference = linha.get("reference")
+                # Regra idêntica ao Delphi
+                if linha.get("flag_yes") != "YES" and linha.get("ImportRefCode") != "GRN No":
 
-                cursor.execute("""
-                    INSERT INTO whsauroraAAF_temp (reference, aaf_raw, criticality)
-                    VALUES (%s, %s, %s)
-                """, (reference, aaf_val, criticality))
+                    cursor.execute("""
+                        INSERT INTO whsauroraaaf (
+                            reference,
+                            Waybill,
+                            aaf,
+                            grn1,
+                            ImportRefCode,
+                            situationregistration,
+                            dateregistration
+                        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    """, (
+                        linha.get("reference"),
+                        linha.get("Waybill"),
+                        linha.get("aaf"),
+                        linha.get("grn1"),
+                        linha.get("ImportRefCode"),
+                        "I"
+                    ))
 
             conn.commit()
 
-        # 🔹 Atualização linha a linha (igual Delphi)
+        # ==================================================
+        # 2️⃣ ATUALIZAÇÃO whsproductsputaway
+        # ==================================================
         if aaf_tela and linhas:
             for idx, linha in enumerate(linhas, start=1):
-                reference = linha.get("reference")
-                aaf_val = linha.get("aaf")
-                criticality = linha.get("criticality")
-
                 sql = """
                     UPDATE whsproductsputaway
-                    SET whsproductsputaway.aaf = %s,
-                        whsproductsputaway.Criticality = %s
-                    WHERE whsproductsputaway.Reference = %s
+                    SET aaf = %s,
+                        Criticality = %s
+                    WHERE Reference = %s
                 """
-                params = (aaf_val, criticality, reference)
+                params = (
+                    linha.get("aaf"),
+                    linha.get("criticality"),
+                    linha.get("reference")
+                )
 
                 if not update_geral:
-                    sql += "AND whsproductsputaway.aaf IS NULL"
+                    sql += " AND aaf IS NULL"
 
                 executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}", params)
                 total_afetados += resultados[f"aaf_tela_{idx}"]["afetados"]
@@ -576,58 +588,70 @@ def processar_auroraAAF(
                 if aaf_log:
                     sql = """
                         UPDATE whsproductsputawaylog
-                        SET whsproductsputawaylog.aaf = %s,
-                            whsproductsputawaylog.Criticality = %s
-                        WHERE whsproductsputawaylog.Reference = %s
+                        SET aaf = %s,
+                            Criticality = %s
+                        WHERE Reference = %s
                     """
-                    params = (aaf_val, criticality, reference)
-
                     if not update_geral:
-                        sql += "AND whsproductsputawaylog.aaf IS NULL"
+                        sql += " AND aaf IS NULL"
 
                     executar_sql(cursor, conn, sql, resultados, f"log_aaf_tela_{idx}", params)
                     total_afetados += resultados[f"log_aaf_tela_{idx}"]["afetados"]
 
-        # 🔹 Atualização em massa (igual Delphi)
-        else:
-            sql = """
-                UPDATE whsproductsputaway p
-                INNER JOIN whsauroraAAF_temp t ON p.reference = t.reference
-                SET p.aaf = t.aaf_raw,
-                    p.Criticality = t.criticality
-            """
-            if not update_geral:
-                sql += " WHERE (p.aaf IS NULL)"
+        # ==================================================
+        # 3️⃣ CONFERÊNCIA FINAL (BASEADA NA whsauroraaaf)
+        # ==================================================
+        cursor.execute("""
+            SELECT
+                a.reference,
+                a.aaf              AS aaf_importado,
+                p.aaf              AS aaf_aplicado,
+                a.ImportRefCode    AS criticality_importado,
+                p.Criticality      AS criticality_aplicado
+            FROM whsauroraaaf a
+            LEFT JOIN whsproductsputaway p
+                ON p.reference = a.reference
+            WHERE a.situationregistration = 'I'
+            ORDER BY a.reference
+        """)
 
-            executar_sql(cursor, conn, sql, resultados, "aaf_mass")
-            total_afetados += resultados["aaf_mass"]["afetados"]
+        for ref, aaf_imp, aaf_apl, crit_imp, crit_apl in cursor.fetchall():
+            divergencias = []
 
-            if aaf_log:
-                sql = """
-                    UPDATE whsproductsputawaylog l
-                    INNER JOIN whsauroraAAF_temp t ON l.reference = t.reference
-                    SET l.aaf = t.aaf_raw,
-                        l.Criticality = t.criticality
-                """
-                if not update_geral:
-                    sql += " WHERE (l.aaf = '' OR l.aaf IS NULL)"
+            if aaf_imp != aaf_apl:
+                divergencias.append("AAF diferente")
 
-                executar_sql(cursor, conn, sql, resultados, "log_aaf_mass")
-                total_afetados += resultados["log_aaf_mass"]["afetados"]
+            if crit_imp != crit_apl:
+                divergencias.append("Criticality diferente")
 
-        # 🔹 Limpar tabela temporária
-        cursor.execute("DROP TEMPORARY TABLE IF EXISTS whsauroraAAF_temp;")
-        conn.commit()
+            status = "OK" if not divergencias else "DIVERGENTE"
+
+            conferencia.append({
+                "reference": ref,
+                "aaf_importado": aaf_imp,
+                "aaf_aplicado": aaf_apl,
+                "criticality_importado": crit_imp,
+                "criticality_aplicado": crit_apl,
+                "status": status,
+                "observacao": "; ".join(divergencias)
+            })
 
     finally:
         cursor.close()
         conn.close()
 
+    # ==================================================
+    # 4️⃣ RETORNO PARA O DELPHI
+    # ==================================================
     return {
         "status": "ok",
         "total_afetados": total_afetados,
-        "detalhes": resultados
+        "detalhes": resultados,
+        "conferencia": conferencia
     }
+
+
+
 #=====================================================================================================================
 #                            TAREFAS Atribuir Operador
 #---------------------------------------------------------------------------------------------------------------------
