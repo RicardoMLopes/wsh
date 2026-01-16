@@ -994,8 +994,8 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                 # DateProcessStart is CURRENT_TIMESTAMP in SQL
             ]
 
-            # logger.debug(f"[SQL-INSERT] {insert_sql}")
-            # logger.debug(f"[SQL-PARAMS] {insert_params}")
+            logger.debug(f"[SQL-INSERT] {insert_sql}")
+            logger.debug(f"[SQL-PARAMS] {insert_params}")
 
             cursor.execute(insert_sql, tuple(insert_params))
             # recuperar id gerado pelo autoincrement (MySQL / pymysql)
