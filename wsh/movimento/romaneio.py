@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import logging, time
 from sqlalchemy import text
+from datetime import date
 
 moviment_rp = APIRouter()
 
@@ -501,17 +502,16 @@ def executar_sql(cursor, conn, sql, resultados, chave, params=None):
         conn.commit()
         duration = time.time() - start
         afetados = cursor.rowcount
-        resultados[chave] = {
-            "afetados": afetados,
-            "sql": sql,
-            "params": params,
-            "tempo_execucao": f"{duration:.4f}s"
-        }
-        logging.info("Execução [%s] afetou %s registros em %s",
-                     chave, afetados, f"{duration:.4f}s")
+
+        resultados[chave] = {"afetados": afetados,"sql": sql,"params": params,"tempo_execucao": f"{duration:.4f}s"}
+
+        logging.info("Execução [%s] afetou %s registros em %s",chave, afetados, f"{duration:.4f}s" )
+
+        return afetados
+
     except Exception as e:
         conn.rollback()
-        resultados[chave] = {"erro": str(e), "sql": sql, "params": params}
+        resultados[chave] = {"erro": str(e),"sql": sql,"params": params}
         logging.error("Erro ao executar [%s]: %s | Params: %r", chave, e, params)
         raise
 
@@ -527,7 +527,11 @@ def processar_auroraAAF(
     cursor = conn.cursor()
     resultados = {}
     total_afetados = 0
+    linhas_fisicas_afetadas = 0
     conferencia = []
+
+    # 🔹 CONTROLE REAL DE AFETADOS
+    refs_atualizadas = set()
 
     try:
         cursor.execute("TRUNCATE TABLE whsauroraaaf")
@@ -571,7 +575,8 @@ def processar_auroraAAF(
             for idx, linha in enumerate(linhas, start=1):
                 sql = """
                     UPDATE whsproductsputaway
-                    SET aaf = %s                        
+                    SET aaf = %s,
+                    dateatualizeaaf = NOW()                        
                     WHERE Reference = %s
                 """
                 # , Criticality = %s
@@ -584,8 +589,14 @@ def processar_auroraAAF(
                 if not update_geral:
                     sql += " AND aaf IS NULL"
 
-                executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}", params)
-                total_afetados += resultados[f"aaf_tela_{idx}"]["afetados"]
+                # executar_sql(cursor, conn, sql, resultados, f"aaf_tela_{idx}", params)
+                afetados = executar_sql( cursor, conn, sql, resultados, f"aaf_tela_{idx}", params )
+
+                linhas_fisicas_afetadas += afetados
+
+                # 🔹 CONTA SOMENTE UMA VEZ POR REFERENCE
+                if afetados > 0:
+                    refs_atualizadas.add(linha.get("reference"))
 
                 if aaf_log:
                     sql = """
@@ -609,7 +620,8 @@ def processar_auroraAAF(
                 a.aaf              AS aaf_importado,
                 p.aaf              AS aaf_aplicado,
                 a.ImportRefCode    AS criticality_importado,
-                p.Criticality      AS criticality_aplicado
+                p.Criticality      AS criticality_aplicado,
+                p.dateatualizeaaf
             FROM whsauroraaaf a
             LEFT JOIN whsproductsputaway p
                 ON p.reference = a.reference
@@ -617,16 +629,32 @@ def processar_auroraAAF(
             ORDER BY a.reference
         """)
 
-        for ref, aaf_imp, aaf_apl, crit_imp, crit_apl in cursor.fetchall():
+        hoje = date.today()
+
+        for ref, aaf_imp, aaf_apl, crit_imp, crit_apl, dt_atualiza in cursor.fetchall():
             divergencias = []
+            status = "OK"
 
-            if aaf_imp != aaf_apl:
-                divergencias.append("AAF diferente")
 
-            # if crit_imp != crit_apl:
-            #     divergencias.append("Criticality diferente")
+            # 🔹 PRIORIDADE 1 — ATUALIZADO
+            if dt_atualiza and dt_atualiza.date() == hoje:
+                status = "ATUALIZADO"
+                observacao = "AAF atualizado hoje"
 
-            status = "OK" if not divergencias else "DIVERGENTE"
+            else:
+                # 🔹 DIVERGÊNCIAS
+                if aaf_imp != aaf_apl:
+                    divergencias.append("AAF diferente")
+
+                # Se quiser reativar depois
+                # if crit_imp != crit_apl:
+                #     divergencias.append("Criticality diferente")
+
+                if divergencias:
+                    status = "DIVERGENTE"
+                    observacao = "; ".join(divergencias)
+                else:
+                    observacao = ""
 
             conferencia.append({
                 "reference": ref,
@@ -635,7 +663,7 @@ def processar_auroraAAF(
                 "criticality_importado": crit_imp,
                 "criticality_aplicado": crit_apl,
                 "status": status,
-                "observacao": "; ".join(divergencias)
+                "observacao": observacao
             })
 
     finally:
@@ -647,7 +675,8 @@ def processar_auroraAAF(
     # ==================================================
     return {
         "status": "ok",
-        "total_afetados": total_afetados,
+        "total_afetados": len(refs_atualizadas),
+        "linhas_fisicas_afetadas": linhas_fisicas_afetadas,
         "detalhes": resultados,
         "conferencia": conferencia
     }
