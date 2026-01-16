@@ -546,15 +546,17 @@ def processar_auroraAAF(
                             reference,
                             Waybill,
                             aaf,
+                            Criticality,
                             grn1,
                             ImportRefCode,
                             situationregistration,
                             dateregistration
-                        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                     """, (
                         linha.get("reference"),
                         linha.get("Waybill"),
                         linha.get("aaf"),
+                        linha.get("Criticality"),
                         linha.get("grn1"),
                         linha.get("ImportRefCode"),
                         "I"
@@ -569,13 +571,13 @@ def processar_auroraAAF(
             for idx, linha in enumerate(linhas, start=1):
                 sql = """
                     UPDATE whsproductsputaway
-                    SET aaf = %s,
-                        Criticality = %s
+                    SET aaf = %s                        
                     WHERE Reference = %s
                 """
+                # , Criticality = %s
                 params = (
                     linha.get("aaf"),
-                    linha.get("criticality"),
+                    # linha.get("criticality"),
                     linha.get("reference")
                 )
 
@@ -621,8 +623,8 @@ def processar_auroraAAF(
             if aaf_imp != aaf_apl:
                 divergencias.append("AAF diferente")
 
-            if crit_imp != crit_apl:
-                divergencias.append("Criticality diferente")
+            # if crit_imp != crit_apl:
+            #     divergencias.append("Criticality diferente")
 
             status = "OK" if not divergencias else "DIVERGENTE"
 
