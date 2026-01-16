@@ -760,12 +760,22 @@ class MovimentoPutaway(BaseModel):
 
 @moviment_rp.post("/movimento/putaway")
 def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
+    """
+    Rota mov. putaway traduzida do Delphi.
+    - Mantém comportamento do Delphi (calculo etiquetas, acumulo User_Id no registro principal)
+    - Usa autoincrement (cursor.lastrowid) para INSERT principal
+    - Grava LOG sempre (após UPDATE ou INSERT)
+    - whsproductsputawaylog.User_Id recebe apenas usuario atual (numérico)
+    """
+    logger.info(">>> [INICIO] movimento_putaway (rotina completa estilo Delphi)")
+    logger.info(f"[REQUEST] Dados recebidos: {mov.dict()}")
 
+    # conexão crua (pymysql expected)
     conn = db.connection().connection
     cursor = conn.cursor()
 
     try:
-        # 🚨 TRANSACTION START
+        # 🔒 Inicia transação
         conn.begin()
 
         # ----------------------------
@@ -774,9 +784,13 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         tx_codigo_id = int(mov.id or 0)
         quant_revisada_val = float(mov.quantidade_revisada or 0.0)
         volume_val = int(mov.volume or 0)
-        usuario_token = (mov.usuario_id or '').strip()
-        operador_id = (mov.operador_id or '').strip()
+        usuario_token = (mov.usuario_id or '').strip()   # ex: '19'
+        operador_id = (mov.operador_id or '').strip()    # ex: '22'
 
+        logger.info(f"[STEP] Normalizando valores de entrada")
+        logger.info(f"[DATA] ID={tx_codigo_id} QtdRevisada={quant_revisada_val} Vol={volume_val} Usuario={usuario_token}")
+
+        # Variáveis Delphi-style
         TipoEtiqueta = 'N'
         StandardQty = 0.0
         LPSQty = 0.0
@@ -788,37 +802,47 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
         IdUser_new = usuario_token + "," if usuario_token else ""
 
         # ----------------------------
-        # 🔒 SELECT COM LOCK (FOR UPDATE)
+        # SELECT inicial (equivalente Delphi) COM LOCK
         # ----------------------------
+        logger.info("[SQL] Executando SELECT inicial estilo Delphi")
         select_sql = """
             SELECT
-              MAX(User_Id),
-              SUM(COALESCE(RevisedQty,0)),
-              SUM(COALESCE(Qty,0)),
-              MIN(DateProcessStart),
-              SUM(COALESCE(RevisedVolume,0))
+              MAX(User_Id) AS User,
+              SUM(COALESCE(RevisedQty,0)) AS QtyLanc,
+              SUM(COALESCE(Qty,0)) AS QtyProc,
+              MIN(DateProcessStart) AS DtProc,
+              SUM(COALESCE(RevisedVolume,0)) AS Volume
             FROM whsproductsputaway
-            WHERE Reference = %s
+            WHERE ID = %s
+              AND Reference = %s
               AND Waybill = %s
               AND PN = %s
               AND COALESCE(situationregistration,'') <> 'E'
             FOR UPDATE
         """
-        cursor.execute(select_sql, (mov.reference, mov.waybill, mov.pn))
+        cursor.execute(select_sql, (tx_codigo_id, mov.reference, mov.waybill, mov.pn))
         row = cursor.fetchone()
+        logger.info(f"[SQL-RESULT] Resultado SELECT: {row}")
 
         # ----------------------------
-        # UPDATE
+        # Se registro existe: UPDATE
         # ----------------------------
-        if row:
+        if row and tx_codigo_id != 0:
+            logger.info("[FLOW] Fluxo UPDATE → registro existente encontrado")
             IdUser_db = row[0] or ''
             QtdBanco = float(row[1] or 0.0)
             QtdProcesso = float(row[2] or 0.0)
             DtProc = row[3]
             VolumeDB = int(row[4] or 0)
 
+            logger.info(f"[DATA] Banco={QtdBanco} Processo={QtdProcesso} DtProc={DtProc} VolumeDB={VolumeDB}")
+
             DifQtd = QtdBanco + quant_revisada_val - QtdProcesso
+            logger.info(f"[DATA] DifQtd calculado: {DifQtd}")
+
             GravaIniProcesso = (DtProc is None)
+            if GravaIniProcesso:
+                logger.info("[FLOW] GravaIniProcesso = TRUE → será gravado DateProcessStart (UPDATE)")
 
             if VolumeDB > MaxVolume:
                 MaxVolume = VolumeDB
@@ -826,81 +850,106 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             if QtdProcesso <= 0:
                 UndeclaredSQty = quant_revisada_val
                 TipoEtiqueta = 'F'
+                logger.info("[FLOW] TipoEtiqueta=F (Undeclared)")
             else:
                 if DifQtd <= 0:
                     StandardQty = quant_revisada_val
+                    TipoEtiqueta = 'N'
+                    logger.info("[FLOW] TipoEtiqueta=N (Standard)")
                 else:
                     if DifQtd >= quant_revisada_val:
                         LPSQty = DifQtd
                         TipoEtiqueta = 'L'
+                        logger.info("[FLOW] TipoEtiqueta=L (LPS)")
                     else:
                         LPSQty = DifQtd
                         StandardQty = quant_revisada_val - DifQtd
                         MultiplaEtiqueta = True
+                        logger.info("[FLOW] TipoEtiqueta=N+L (Múltiplas etiquetas)")
+
+            logger.info(f"[DATA] Standard={StandardQty} LPS={LPSQty} Undeclared={UndeclaredSQty} Multiple={MultiplaEtiqueta}")
 
             token_user = usuario_token + ","
-            if usuario_token and token_user not in IdUser_db:
-                base = IdUser_db.rstrip(',')
-                IdUser_new = f"{base},{usuario_token}," if base else f"{usuario_token},"
+            if usuario_token and (token_user not in IdUser_db):
+                if IdUser_db.endswith(','):
+                    base = IdUser_db[:-1]
+                else:
+                    base = IdUser_db
+                if base.strip() in ('', '0'):
+                    IdUser_new = f"{usuario_token},"
+                else:
+                    IdUser_new = f"{base},{usuario_token},"
             else:
                 IdUser_new = IdUser_db
 
-            update_parts = [
-                "Print='F'",
-                "typeprint='N'",
-                "RevisedQty = COALESCE(RevisedQty,0) + %s",
-                "User_Id = %s",
-                "StandardQty = COALESCE(StandardQty,0) + %s",
-                "LPSQty = COALESCE(LPSQty,0) + %s",
-                "UndeclaredSQty = COALESCE(UndeclaredSQty,0) + %s",
+            logger.info(f"[DATA] User_Id final (UPDATE): {IdUser_new}")
+
+            update_parts = []
+            update_params = []
+
+            update_parts.append("Print='F'")
+            update_parts.append("typeprint='N'")
+            update_parts.append("RevisedQty = COALESCE(RevisedQty,0) + %s")
+            update_params.append(quant_revisada_val)
+            update_parts.append("User_Id = %s")
+            update_params.append(IdUser_new)
+
+            if GravaIniProcesso:
+                update_parts.append("DateProcessStart=CURRENT_TIMESTAMP")
+
+            update_parts.append("StandardQty = COALESCE(StandardQty,0) + %s")
+            update_params.append(StandardQty)
+            update_parts.append("LPSQty = COALESCE(LPSQty,0) + %s")
+            update_params.append(LPSQty)
+            update_parts.append("UndeclaredSQty = COALESCE(UndeclaredSQty,0) + %s")
+            update_params.append(UndeclaredSQty)
+
+            if mov.avaria:
+                update_parts.append("breakdownQty = COALESCE(breakdownQty,0) + %s")
+                update_params.append(quant_revisada_val)
+
+            update_parts.extend([
                 "RevisedVolume = %s",
                 "Description = %s",
                 "Position = %s",
                 "siccode = %s",
                 "situationregistration='A'",
                 "dateregistration=CURRENT_TIMESTAMP"
-            ]
-
-            params = [
-                quant_revisada_val,
-                IdUser_new,
-                StandardQty,
-                LPSQty,
-                UndeclaredSQty,
+            ])
+            update_params.extend([
                 MaxVolume,
                 mov.descricao,
                 mov.posicao,
                 mov.classe
-            ]
+            ])
 
-            if mov.avaria:
-                update_parts.append("breakdownQty = COALESCE(breakdownQty,0) + %s")
-                params.append(quant_revisada_val)
-
-            if GravaIniProcesso:
-                update_parts.append("DateProcessStart=CURRENT_TIMESTAMP")
-
-            update_sql = f"""
-                UPDATE whsproductsputaway
-                SET {", ".join(update_parts)}
-                WHERE Reference=%s AND Waybill=%s AND PN=%s
-            """
-            params.extend([mov.reference, mov.waybill, mov.pn])
-
-            cursor.execute(update_sql, tuple(params))
-
-            cursor.execute(
-                "SELECT ID FROM whsproductsputaway WHERE Reference=%s AND Waybill=%s AND PN=%s",
-                (mov.reference, mov.waybill, mov.pn)
+            update_sql = (
+                "UPDATE whsproductsputaway SET " +
+                ", ".join(update_parts) +
+                " WHERE ID=%s AND Reference=%s AND Waybill=%s AND PN=%s"
             )
-            mov.id = cursor.fetchone()[0]
+            update_params.extend([tx_codigo_id, mov.reference, mov.waybill, mov.pn])
+
+            logger.debug(f"[SQL-UPDATE] {update_sql}")
+            logger.debug(f"[SQL-PARAMS] {update_params}")
+
+            cursor.execute(update_sql, tuple(update_params))
+            # ❌ commit removido aqui — commit único no final
+
+            mov.id = tx_codigo_id
 
         # ----------------------------
         # INSERT (registro novo)
         # ----------------------------
         else:
+            logger.info("[FLOW] Fluxo INSERT → nenhum registro encontrado (novo)")
             TipoEtiqueta = "F"
             UndeclaredSQty = quant_revisada_val
+
+            if IdUser_new == "":
+                IdUser_new = usuario_token + "," if usuario_token else ""
+
+            breakdown_val = quant_revisada_val if mov.avaria else 0.0
 
             insert_sql = """
                 INSERT INTO whsproductsputaway
@@ -917,27 +966,46 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                  'I',CURRENT_TIMESTAMP)
             """
 
+            logger.debug(f"[SQL-INSERT] {insert_sql}")
+            logger.debug(f"[SQL-PARAMS] {mov.dict()}")
+
             cursor.execute(insert_sql, (
                 mov.pn, mov.descricao, mov.posicao, operador_id,
                 quant_revisada_val, IdUser_new,
-                0.0, 0.0, UndeclaredSQty,
-                quant_revisada_val if mov.avaria else 0.0,
-                MaxVolume, mov.reference, mov.waybill
+                StandardQty, LPSQty, UndeclaredSQty,
+                breakdown_val, MaxVolume,
+                mov.reference, mov.waybill
             ))
 
             mov.id = cursor.lastrowid
 
         # ----------------------------
-        # LOG (mesma transação)
+        # GRAVAR LOG — SEMPRE
         # ----------------------------
+        logger.info("[FLOW] Gravando LOG (sempre executado após UPDATE/INSERT)")
+
         I = 1 if MultiplaEtiqueta else 0
         F = 2 if MultiplaEtiqueta else 0
 
         for cont in range(I, F + 1):
-            typeprint_val = TipoEtiqueta if cont == 0 else ("N" if cont == 1 else "L")
-            revisedqty_for_log = quant_revisada_val if cont == 0 else (StandardQty if cont == 1 else LPSQty)
+            if cont == 0:
+                typeprint_val = TipoEtiqueta
+                revisedqty_for_log = quant_revisada_val
+            elif cont == 1:
+                typeprint_val = "N"
+                revisedqty_for_log = StandardQty
+            else:
+                typeprint_val = "L"
+                revisedqty_for_log = LPSQty
 
-            cursor.execute("""
+            user_id_log = None
+            if usuario_token:
+                try:
+                    user_id_log = int(usuario_token)
+                except:
+                    user_id_log = usuario_token
+
+            insert_log_sql = """
                 INSERT INTO whsproductsputawaylog
                 (Id_whsprod, Reference, Waybill, PN, Description, Position, siccode,
                  Qty, operator_id, datecreate, Print, typeprint, User_Id,
@@ -947,29 +1015,45 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                 (%s,%s,%s,%s,%s,%s,%s,
                  %s,%s,CURRENT_TIMESTAMP,'F',%s,%s,
                  %s,%s,%s,%s,'I',CURRENT_TIMESTAMP)
-            """, (
+            """
+
+            logger.debug(f"[SQL-INSERT-LOG] {insert_log_sql}")
+            logger.debug(f"[SQL-PARAMS] cont={cont}")
+
+            cursor.execute(insert_log_sql, (
                 mov.id, mov.reference, mov.waybill, mov.pn,
                 mov.descricao, mov.posicao, mov.classe,
                 quant_revisada_val, operador_id,
-                typeprint_val,
-                int(usuario_token) if usuario_token.isdigit() else usuario_token,
+                typeprint_val, user_id_log,
                 revisedqty_for_log,
                 quant_revisada_val if mov.avaria else 0.0,
                 MaxVolume,
                 quant_revisada_val
             ))
 
-        # ✅ COMMIT FINAL
+        # ✅ COMMIT ÚNICO NO FINAL
         conn.commit()
+        logger.info(">>> [SUCESSO] movimento_putaway finalizado com sucesso")
         return {"status": "ok", "id": mov.id}
 
     except Exception as e:
-        conn.rollback()
+        logger.exception("[ERRO] Exceção geral na rotina movimento_putaway")
+        try:
+            conn.rollback()
+        except:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        cursor.close()
-        conn.close()
+        logger.info("[FINALIZAÇÃO] Fechando cursor/conexão")
+        try:
+            cursor.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
 
 
 #====================================================
