@@ -32,6 +32,7 @@ def get_putaway(id: int):
                 datecreate,
                 typeprint,
                 CONCAT(
+                    'id :',id,'\n',
                     'PN: ', pn, '\n',
                     'classe: ', siccode, '\n',
                     'Position: ', Position, '\n',

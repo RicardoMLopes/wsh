@@ -10,6 +10,7 @@ from wsh.movimento.cancelarmovimento import cancelputway_rp
 from wsh.movimento.finishproductsputaway import putway_rp
 from wsh.movimento.produtividade import produtividade_rp
 from wsh.movimento.romaneio import moviment_rp
+from wsh.api.movimento import api_rp
 from wsh.user.login import login_rp
 from wsh.user.user import user_rp
 from models import __all__, Version
@@ -32,6 +33,7 @@ app.include_router(produtividade_rp, prefix="", tags=["productivity"])
 app.include_router(a020_a190_rp, prefix="", tags=["a020 a190"])
 app.include_router(putway_rp, prefix="", tags=["finish process"])
 app.include_router(cancelputway_rp, prefix="", tags=["cancel putway"])
+app.include_router(api_rp, prefix="", tags=["api"])
 
 
 @app.get("/")
