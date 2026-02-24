@@ -576,13 +576,14 @@ def processar_auroraAAF(
                 sql = """
                     UPDATE whsproductsputaway
                     SET aaf = %s,
+                    Criticality = %s,
                     dateatualizeaaf = NOW()                        
                     WHERE Reference = %s
                 """
-                # , Criticality = %s
+
                 params = (
                     linha.get("aaf"),
-                    # linha.get("criticality"),
+                    linha.get("criticality"),
                     linha.get("reference")
                 )
 
