@@ -583,7 +583,7 @@ def processar_auroraAAF(
 
                 params = (
                     linha.get("aaf"),
-                    linha.get("criticality"),
+                    linha.get("Criticality"),
                     linha.get("reference")
                 )
 
