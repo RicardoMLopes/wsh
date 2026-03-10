@@ -136,3 +136,24 @@ def block_user(data: BlockUserModel, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "blocked", "usuario": data.usuario}
+
+# ==========================================================================================
+#                              SINCRONIZAR OS DADOS PARA APP
+# ==========================================================================================
+@user_rp.get("/api/users")
+def get_all_users(db: Session = Depends(get_db)):
+    sql = text("""
+        SELECT *
+        FROM caduser
+        WHERE situationregistration <> 'E'
+          AND password IS NOT NULL
+          AND password <> ''
+          AND password <> 'none'
+    """)
+    result = db.execute(sql).fetchall()
+
+    if not result:
+        return {"found": False, "data": []}
+
+    users = [dict(row._mapping) for row in result]
+    return {"found": True, "data": users}
