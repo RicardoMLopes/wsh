@@ -25,6 +25,7 @@ class Putaway(BaseModel):
     user_id: int
     pn: Optional[str] = None
     position: Optional[str] = None
+    standardposition: Optional[str] = None
     reference: Optional[str] = None
     datecreate: Optional[str] = None
     cont: Optional[str] = None
@@ -47,13 +48,14 @@ def import_movimento(item: Putaway, db: Session = Depends(get_db)):
 
         cursor.execute("""
             INSERT INTO whsmovementputaway
-            (idlog, user_id, pn, position, reference, datecreate, cont, status, confirm, dateregistration, synchronize)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (idlog, user_id, pn, position, standardposition, reference, datecreate, cont, status, confirm, dateregistration, synchronize)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             item.idlog,
             item.user_id,
             item.pn,
             item.position,
+            item.standardposition,
             item.reference,
             datecreate,
             item.cont,
