@@ -28,7 +28,7 @@ def get_putaway(id: int):
                 Qty,
                 RevisedQty,
                 siccode,
-                reference,
+                reference,               
                 datecreate,
                 typeprint,
                 CONCAT(
@@ -99,6 +99,40 @@ def products_putaway(
 
     except Exception as e:
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        db.close()
+
+
+@consult_prod_rp.get("/existqtyprint/{id}")
+def exitsqtyprint(id: int):
+    db = SessionLocal()
+    try:
+        sql = text("""
+            SELECT
+                id,
+                Id_whsprod,
+                pn,
+                User_id,                
+                printqty,
+                qrcode,
+                printqty,
+                typeprint
+            FROM whsproductsputawaylog
+            WHERE id = :id
+        """)
+
+        result = db.execute(sql, {"id": id}).fetchone()
+
+        if result is None:
+            raise HTTPException(status_code=404, detail="Registro não encontrado")
+
+        return {"status": "ok", "data": dict(result._mapping)}
+
+    except Exception as e:
+
+        traceback.print_exc()   # <-- mostra o erro real
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:

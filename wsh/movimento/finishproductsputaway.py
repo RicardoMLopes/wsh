@@ -1,11 +1,9 @@
 from fastapi import Depends, APIRouter, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional
-from typing import List
+from pydantic import BaseModel
+from fastapi.responses import Response
 from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
-from datetime import datetime
-import logging, time
+import logging
 from sqlalchemy import text
 
 
@@ -231,4 +229,44 @@ def operator_finish(data: OperatorFinishModel, db: Session = Depends(get_db)):
 
     except Exception as e:
         return {"error": str(e)}
+
+
+
+    # =================================================================================
+    #  Atualiza impressão da etiqueta quantidade etiqueta, o qrcode whsproductsputaway
+    # =================================================================================
+class PrintUpdate(BaseModel):
+    id: int
+    Id_whsprod: int
+    print: str
+    printqty: int   # inteiro
+    qrcode: str     # texto longo
+
+
+@putway_rp.post("/putaway/atualiza")
+def atualiza_status_impressao(dados: PrintUpdate, db: Session = Depends(get_db)):
+    try:
+        # Atualiza tabela principal
+        db.execute(text("""
+            UPDATE whsproductsputaway
+               SET print = :print
+             WHERE id = :Id_whsprod
+        """), dados.model_dump())
+
+        # Atualiza tabela de log
+        db.execute(text("""
+            UPDATE whsproductsputawaylog
+               SET print = :print,
+                   printqty = :printqty,
+                   qrcode = :qrcode
+             WHERE id = :id
+        """), dados.model_dump())
+
+        db.commit()
+        return Response(status_code=200)
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
