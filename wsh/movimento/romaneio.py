@@ -905,9 +905,15 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             update_parts.append("UndeclaredSQty = COALESCE(UndeclaredSQty,0) + %s")
             update_params.append(UndeclaredSQty)
 
+            # if mov.avaria:
+            #     update_parts.append("breakdownQty = COALESCE(breakdownQty,0) + %s")
+            #     update_params.append(quant_revisada_val)
+
             if mov.avaria:
                 update_parts.append("breakdownQty = COALESCE(breakdownQty,0) + %s")
                 update_params.append(quant_revisada_val)
+                update_parts.append("typeprint='A'")
+
 
             update_parts.extend([
                 "RevisedVolume = %s",
@@ -999,12 +1005,17 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                 typeprint_val = "L"
                 revisedqty_for_log = LPSQty
 
+            if mov.avaria:
+                typeprint_val = "A"
+
             user_id_log = None
             if usuario_token:
                 try:
                     user_id_log = int(usuario_token)
                 except:
                     user_id_log = usuario_token
+
+
 
             insert_log_sql = """
                 INSERT INTO whsproductsputawaylog
