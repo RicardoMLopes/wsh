@@ -88,15 +88,15 @@ def get_listageral(
     params = {}
 
     if controle:
-        sql += " AND Reference = :controle"
+        sql += " AND TRIM(Reference) = :controle"
         params["controle"] = controle
 
     if waybill:
-        sql += " AND Waybill = :waybill"
+        sql += " AND TRIM(Waybill) = :waybill"
         params["waybill"] = waybill
 
     if codigoitem:
-        sql += " AND PN = :pn"
+        sql += " AND TRIM(PN) = :pn"
         params["pn"] = codigoitem
 
     if situacao == 0:

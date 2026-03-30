@@ -79,7 +79,7 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
                     SET Qty=%s, Description=%s, processlines=%s, inputtype='import', situationregistration='A', dateregistration=%s
                     WHERE Reference=%s AND Waybill=%s AND PN=%s
                 """, (item.qtd, item.description, item.processlines, datetime.now(),
-                      item.referencia, item.waybill, item.pn))
+                      item.referencia.strip(), item.waybill.strip(), item.pn.strip() ))
                 atualizados += 1
             else:
                 ignorados += 1
@@ -95,8 +95,8 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
                 INSERT INTO whsproductsputaway
                 (Id, User_id, PN, Description, Reference, Qty, Waybill, processlines, datecreate, inputtype, situationregistration, dateregistration)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (new_id, 0, item.pn, item.description, item.referencia, item.qtd,
-                  item.waybill, item.processlines, datetime.now(), 'import', 'I', datetime.now()))
+            """, (new_id, 0, item.pn.strip(), item.description.strip(), item.referencia.strip(), item.qtd,
+                  item.waybill.strip(), item.processlines, datetime.now(), 'import', 'I', datetime.now()))
             inseridos += 1
 
     conn.commit()
@@ -215,15 +215,15 @@ def listar_tarefas(
     # filtros básicos
     if referencia:
         sql += " AND Reference=%s"
-        params.append(referencia)
+        params.append(referencia.strip() )
 
     if waybill:
         sql += " AND Waybill=%s"
-        params.append(waybill)
+        params.append(waybill.strip() )
 
     if pn:
         sql += " AND PN=%s"
-        params.append(pn)
+        params.append(pn.strip() )
 
     if operador:
         sql += " AND operator_id LIKE %s"
@@ -234,27 +234,27 @@ def listar_tarefas(
 
     if grn1:
         sql += " AND GRN1=%s"
-        params.append(grn1)
+        params.append(grn1.strip())
 
     if grn3:
         sql += " AND GRN3=%s"
-        params.append(grn3)
+        params.append(grn3.strip())
 
     if processdate:
         sql += " AND processdate=%s"
-        params.append(processdate)
+        params.append(processdate.strip())
 
     if aaf:
         sql += " AND AAF=%s"
-        params.append(aaf)
+        params.append(aaf.strip())
 
     if rnc:
         sql += " AND RNC=%s"
-        params.append(rnc)
+        params.append(rnc.strip())
 
     if grn:
         sql += " AND GRN=%s"
-        params.append(grn)
+        params.append(grn.strip())
 
     data_ini = normaliza_data(data_ini)
     data_fim = normaliza_data(data_fim)
@@ -376,20 +376,20 @@ def processar_aurora071(
         condicao = "" if update_geral else "AND (p.grn1='' OR p.grn1 IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
-            JOIN (
-                SELECT p.Id
-                FROM whsproductsputaway p
+                JOIN (
+                    SELECT p.Id
+                    FROM whsproductsputaway p
+                    INNER JOIN whsaurora071 a
+                        ON TRIM(p.reference) = TRIM(a.FileRefPrefix)
+                        AND TRIM(p.PN) = TRIM(a.Item)
+                    WHERE (p.grn1 IS NULL OR p.grn1 <> a.TXIssuedate)
+                        {condicao}
+                    LIMIT {{lote}}
+                ) AS t ON p.Id = t.Id
                 INNER JOIN whsaurora071 a
-                ON p.reference = a.FileRefPrefix
-                AND p.PN = a.Item
-                WHERE (p.grn1 IS NULL OR p.grn1 <> a.TXIssuedate)
-                {condicao}
-                LIMIT {{lote}}
-            ) AS t ON p.Id = t.Id
-            INNER JOIN whsaurora071 a
-            ON p.reference = a.FileRefPrefix
-            AND p.PN = a.Item
-            SET p.grn1 = a.TXIssuedate
+                    ON TRIM(p.reference) = TRIM(a.FileRefPrefix)
+                    AND TRIM(p.PN) = TRIM(a.Item)
+                SET p.grn1 = a.TXIssuedate;
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn1")
         logger.info("✅ Atualização GRN1 concluída.")
@@ -399,20 +399,20 @@ def processar_aurora071(
         condicao = "" if update_geral else "AND (p.grn3='' OR p.grn3 IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
-            JOIN (
-                SELECT p.Id
-                FROM whsproductsputaway p
+                JOIN (
+                    SELECT p.Id
+                    FROM whsproductsputaway p
+                    INNER JOIN whsaurora071 a
+                        ON TRIM(p.reference) = TRIM(a.FileRefPrefix)
+                        AND TRIM(p.PN) = TRIM(a.Item)
+                    WHERE (StockGoodsInwards = 'S') AND (p.grn3 IS NULL OR p.grn3 <> a.Receiptdate)
+                        {condicao}
+                    LIMIT {{lote}}
+                ) AS t ON p.Id = t.Id
                 INNER JOIN whsaurora071 a
-                ON p.reference = a.FileRefPrefix
-                AND p.PN = a.Item
-                WHERE (StockGoodsInwards = 'S') AND (p.grn3 IS NULL OR p.grn3 <> a.Receiptdate)
-                {condicao}
-                LIMIT {{lote}}
-            ) AS t ON p.Id = t.Id
-            INNER JOIN whsaurora071 a
-            ON p.reference = a.FileRefPrefix
-            AND p.PN = a.Item
-            SET p.grn3 = a.Receiptdate
+                    ON TRIM(p.reference) = TRIM(a.FileRefPrefix)
+                    AND TRIM(p.PN) = TRIM(a.Item)
+                SET p.grn3 = a.Receiptdate;
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn3")
         logger.info("✅ Atualização GRN3 concluída.")
@@ -426,18 +426,18 @@ def processar_aurora071(
                     SELECT DISTINCT p.Id
                     FROM whsproductsputaway p
                     INNER JOIN whsaurora071 a
-                      ON p.reference = a.FileRefPrefix
-                     AND p.PN = a.Item
-                     AND a.StockGoodsInwards in('G', 'S')
+                        ON TRIM(p.reference) = TRIM(a.FileRefPrefix)
+                        AND TRIM(p.PN) = TRIM(a.Item)
+                        AND a.StockGoodsInwards IN ('G', 'S')
                     WHERE (p.GRN IS NULL OR p.GRN <> a.GRNNo)
-                    {condicao}
+                        {condicao}
                     LIMIT {{lote}}
                 ) AS t ON p.Id = t.Id
                 INNER JOIN whsaurora071 a
-                  ON p.reference = a.FileRefPrefix
-                 AND p.PN = a.Item
-                 AND a.StockGoodsInwards in('G', 'S')
-                SET p.GRN = a.GRNNo
+                    ON TRIM(p.reference) = TRIM(a.FileRefPrefix)
+                    AND TRIM(p.PN) = TRIM(a.Item)
+                    AND a.StockGoodsInwards IN ('G', 'S')
+                SET p.GRN = a.GRNNo;
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn")
         logger.info("✅ Atualização GRN concluída.")
@@ -449,20 +449,20 @@ def processar_aurora071(
                 condicao = "" if update_geral else f"AND (l.{campo}='' OR l.{campo} IS NULL)"
                 sql_template = f"""
                     UPDATE whsproductsputawaylog l
-                    JOIN (
-                        SELECT l.Id
-                        FROM whsproductsputawaylog l
+                        JOIN (
+                            SELECT l.Id
+                            FROM whsproductsputawaylog l
+                            INNER JOIN whsaurora071 a
+                                ON TRIM(l.reference) = TRIM(a.FileRefPrefix)
+                                AND TRIM(l.PN) = TRIM(a.Item)
+                            WHERE (l.{campo} IS NULL OR l.{campo} <> a.{coluna})
+                                {condicao}
+                            LIMIT {{lote}}
+                        ) AS t ON l.Id = t.Id
                         INNER JOIN whsaurora071 a
-                        ON p.reference = a.FileRefPrefix
-                        AND l.PN = a.Item
-                        WHERE (l.{campo} IS NULL OR l.{campo} <> a.{coluna})
-                        {condicao}
-                        LIMIT {{lote}}
-                    ) AS t ON l.Id = t.Id
-                    INNER JOIN whsaurora071 a
-                    ON p.reference = a.FileRefPrefix
-                    AND l.PN = a.Item
-                    SET l.{campo} = a.{coluna}
+                            ON TRIM(l.reference) = TRIM(a.FileRefPrefix)
+                            AND TRIM(l.PN) = TRIM(a.Item)
+                        SET l.{campo} = a.{coluna};
                 """
                 executar_sql_em_lotes(cursor, conn, sql_template, resultados, f"log_{campo}")
                 logger.info(f"✅ Atualização de log {campo} concluída.")
@@ -557,12 +557,12 @@ def processar_auroraAAF(
                             dateregistration
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                     """, (
-                        linha.get("reference"),
-                        linha.get("Waybill"),
-                        linha.get("aaf"),
-                        linha.get("Criticality"),
-                        linha.get("grn1"),
-                        linha.get("ImportRefCode"),
+                        linha.get("reference").strip(),
+                        linha.get("Waybill").strip(),
+                        linha.get("aaf").strip(),
+                        linha.get("Criticality").strip(),
+                        linha.get("grn1").strip(),
+                        linha.get("ImportRefCode").strip(),
                         "I"
                     ))
 
@@ -582,9 +582,9 @@ def processar_auroraAAF(
                 """
 
                 params = (
-                    linha.get("aaf"),
-                    linha.get("Criticality"),
-                    linha.get("reference")
+                    linha.get("aaf").strip(),
+                    linha.get("Criticality").strip(),
+                    linha.get("reference").strip()
                 )
 
                 if not update_geral:
@@ -714,8 +714,8 @@ def atribuir_operador(
             sql_update = f"""
                 UPDATE whsproductsputaway
                 SET operator_id = '{operador}'
-                WHERE Reference = '{reference}'
-                  AND Waybill = '{waybill}'
+                WHERE TRIM(Reference) = TRIM('{reference}')
+                  AND TRIM(Waybill) = TRIM('{waybill}')
             """
             cursor.execute(sql_update)
             conn.commit()
@@ -935,7 +935,7 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
                 ", ".join(update_parts) +
                 " WHERE ID=%s AND Reference=%s AND Waybill=%s AND PN=%s"
             )
-            update_params.extend([tx_codigo_id, mov.reference, mov.waybill, mov.pn])
+            update_params.extend([tx_codigo_id, mov.reference.strip(), mov.waybill, mov.pn])
 
             logger.debug(f"[SQL-UPDATE] {update_sql}")
             logger.debug(f"[SQL-PARAMS] {update_params}")
@@ -977,11 +977,19 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             logger.debug(f"[SQL-PARAMS] {mov.dict()}")
 
             cursor.execute(insert_sql, (
-                mov.pn, mov.descricao, mov.posicao, operador_id,
-                quant_revisada_val, IdUser_new,
-                StandardQty, LPSQty, UndeclaredSQty,
-                breakdown_val, MaxVolume,
-                mov.reference, mov.waybill
+                mov.pn,
+                mov.descricao,
+                mov.posicao,
+                operador_id,
+                quant_revisada_val,
+                IdUser_new,
+                StandardQty,
+                LPSQty,
+                UndeclaredSQty,
+                breakdown_val,
+                MaxVolume,
+                mov.reference.strip(),  # remove espaços antes de inserir
+                mov.waybill.strip()  # remove espaços antes de inserir
             ))
 
             mov.id = cursor.lastrowid
@@ -1033,10 +1041,17 @@ def movimento_putaway(mov: MovimentoPutaway, db: Session = Depends(get_db)):
             logger.debug(f"[SQL-PARAMS] cont={cont}")
 
             cursor.execute(insert_log_sql, (
-                mov.id, mov.reference, mov.waybill, mov.pn,
-                mov.descricao, mov.posicao, mov.classe,
-                quant_revisada_val, operador_id,
-                typeprint_val, user_id_log,
+                mov.id,
+                mov.reference.strip(),  # remove espaços extras
+                mov.waybill.strip(),
+                mov.pn.strip(),
+                mov.descricao.strip(),
+                mov.posicao,
+                mov.classe,
+                quant_revisada_val,
+                operador_id,
+                typeprint_val,
+                user_id_log,
                 revisedqty_for_log,
                 quant_revisada_val if mov.avaria else 0.0,
                 MaxVolume,
