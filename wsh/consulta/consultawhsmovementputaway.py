@@ -11,8 +11,8 @@ consult_mov_putaway = APIRouter()
 
 
 
-@consult_mov_putaway.get("/movementputaway")
-@consult_mov_putaway.get("/movementputaway/{pn}")
+@consult_mov_putaway.get("/consultmovputaway")
+@consult_mov_putaway.get("/consultmovputaway/{pn}")
 def movement_putaway(
     pn: Optional[str] = None,
     user_id: Optional[int] = None,
