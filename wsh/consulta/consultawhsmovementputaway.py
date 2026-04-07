@@ -27,7 +27,7 @@ def movement_putaway(
             SELECT A.*, B.users
             FROM whsmovementputaway A
             LEFT JOIN caduser B ON B.id = A.user_id
-            WHERE A.situationregistration != 'E'
+             WHERE 1=1
         """
 
         params = {}
