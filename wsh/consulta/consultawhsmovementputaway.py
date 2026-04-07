@@ -1,5 +1,4 @@
 from typing import Optional
-
 from fastapi import FastAPI, Depends, HTTPException, APIRouter
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import text
