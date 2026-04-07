@@ -22,13 +22,12 @@ class Linha(BaseModel):
 
 
 class ImportacaoRequest(BaseModel):
-    tipo: str                     # <- AGORA O TIPO VEM NO JSON
+    tipo: str
     linhas: list[Linha]
 
 
-
 # ------------------------------------------------------
-# FUNÇÃO PARA OBTER CONEXÃO
+# CONEXÃO
 # ------------------------------------------------------
 def get_db():
     db = SessionLocal()
@@ -36,6 +35,34 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# ------------------------------------------------------
+# CONVERSÃO NUMÉRICA ROBUSTA
+# ------------------------------------------------------
+def to_decimal(valor):
+    try:
+        if valor is None:
+            return 0.0
+
+        if isinstance(valor, (int, float)):
+            return float(valor)
+
+        valor = str(valor).strip()
+
+        if valor == "":
+            return 0.0
+
+        # remove lixo invisível
+        valor = valor.replace("\r", "").replace("\n", "")
+
+        # remove milhar e ajusta decimal BR → US
+        valor = valor.replace(".", "").replace(",", ".")
+
+        return float(valor)
+
+    except Exception:
+        raise Exception(f"Valor inválido para número: {valor}")
 
 
 # ------------------------------------------------------
@@ -47,96 +74,113 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
     tipo = payload.tipo.upper()
     inputtype = "national" if tipo == "A020" else "transfer"
 
-    for linha in payload.linhas:
+    try:
+        for idx, linha in enumerate(payload.linhas, start=1):
 
-        if linha.campo01.strip() == "" or linha.flag.strip() == "S":
-            continue
+            if linha.campo01.strip() == "" or linha.flag.strip() == "S":
+                continue
 
-        # ----------------------------------------------------
-        # VERIFICA SE JÁ EXISTE
-        # ----------------------------------------------------
-        consulta = text("""
-            SELECT *
-            FROM whsproductsputaway
-            WHERE Reference = :reference
-              AND Waybill = :waybill
-              AND PN = :pn
-              AND situationregistration <> 'E'
-            LIMIT 1
-        """)
+            # 🔹 CONVERSÕES CENTRALIZADAS
+            qty = to_decimal(linha.qty)
+            processlines = int(to_decimal(linha.processlines))
 
-        result = db.execute(consulta, {
-            "reference": linha.referencia,
-            "waybill": linha.waybill,
-            "pn": linha.pn
-        }).mappings().first()
+            # 🔍 DEBUG (opcional)
+            # print(f"[DEBUG] Linha {idx} | qty original: {repr(linha.qty)} | convertido: {qty}")
 
-        # ----------------------------------------------------
-        # SE EXISTE → ATUALIZA
-        # ----------------------------------------------------
-        if result:
+            consulta = text("""
+                SELECT *
+                FROM whsproductsputaway
+                WHERE Reference = :reference
+                  AND Waybill = :waybill
+                  AND PN = :pn
+                  AND situationregistration <> 'E'
+                LIMIT 1
+            """)
 
-            revisedQty = result["RevisedQty"] if result["RevisedQty"] is not None else 0
-
-            if revisedQty == 0 and linha.flag != "S":
-
-                descricao = linha.descricao if not linha.usarDescricaoPN else linha.pn
-
-                update_sql = text("""
-                    UPDATE whsproductsputaway
-                    SET Qty = :qty,
-                        Description = :descricao,
-                        processlines = :processlines,
-                        inputtype = :inputtype,
-                        situationregistration = 'A',
-                        dateregistration = NOW()
-                    WHERE Reference = :reference
-                      AND Waybill = :waybill
-                      AND PN = :pn
-                """)
-
-                db.execute(update_sql, {
-                    "qty": linha.qty,
-                    "descricao": descricao,
-                    "processlines": linha.processlines,
-                    "inputtype": inputtype,
-                    "reference": linha.referencia,
-                    "waybill": linha.waybill,
-                    "pn": linha.pn
-                })
-                db.commit()
-
-        # ----------------------------------------------------
-        # SE NÃO EXISTE → INSERE
-        # ----------------------------------------------------
-        else:
-
-            max_id = db.execute(text("SELECT COALESCE(MAX(ID), 0) AS id FROM whsproductsputaway")).scalar()
-            max_id += 1
+            result = db.execute(consulta, {
+                "reference": linha.referencia,
+                "waybill": linha.waybill,
+                "pn": linha.pn
+            }).mappings().first()
 
             descricao = linha.descricao if not linha.usarDescricaoPN else linha.pn
 
-            insert_sql = text("""
-                INSERT INTO whsproductsputaway
-                    (Id, User_id, PN, Description, Reference, Qty,
-                     Waybill, processlines, inputtype, datecreate,
-                     situationregistration, dateregistration)
-                VALUES
-                    (:id, 0, :pn, :descricao, :reference, :qty,
-                     :waybill, :processlines, :inputtype, NOW(),
-                     'I', NOW())
-            """)
+            # ----------------------------------------------------
+            # UPDATE
+            # ----------------------------------------------------
+            if result:
 
-            db.execute(insert_sql, {
-                "id": max_id,
-                "pn": linha.pn,
-                "descricao": descricao,
-                "reference": linha.referencia,
-                "qty": linha.qty,
-                "waybill": linha.waybill,
-                "processlines": linha.processlines,
-                "inputtype": inputtype
-            })
-            db.commit()
+                revisedQty = result["RevisedQty"] if result["RevisedQty"] is not None else 0
+
+                if revisedQty == 0:
+
+                    update_sql = text("""
+                        UPDATE whsproductsputaway
+                        SET Qty = :qty,
+                            Description = :descricao,
+                            processlines = :processlines,
+                            inputtype = :inputtype,
+                            situationregistration = 'A',
+                            dateregistration = NOW()
+                        WHERE Reference = :reference
+                          AND Waybill = :waybill
+                          AND PN = :pn
+                    """)
+
+                    db.execute(update_sql, {
+                        "qty": qty,
+                        "descricao": descricao,
+                        "processlines": processlines,
+                        "inputtype": inputtype,
+                        "reference": linha.referencia,
+                        "waybill": linha.waybill,
+                        "pn": linha.pn
+                    })
+
+            # ----------------------------------------------------
+            # INSERT
+            # ----------------------------------------------------
+            else:
+
+                max_id = db.execute(
+                    text("SELECT COALESCE(MAX(ID), 0) FROM whsproductsputaway")
+                ).scalar()
+
+                max_id += 1
+
+                insert_sql = text("""
+                    INSERT INTO whsproductsputaway
+                        (Id, User_id, PN, Description, Reference, Qty,
+                         Waybill, processlines, inputtype, datecreate,
+                         situationregistration, dateregistration)
+                    VALUES
+                        (:id, 0, :pn, :descricao, :reference, :qty,
+                         :waybill, :processlines, :inputtype, NOW(),
+                         'I', NOW())
+                """)
+
+                db.execute(insert_sql, {
+                    "id": max_id,
+                    "pn": linha.pn,
+                    "descricao": descricao,
+                    "reference": linha.referencia,
+                    "qty": qty,
+                    "waybill": linha.waybill,
+                    "processlines": processlines,
+                    "inputtype": inputtype
+                })
+
+        # ✅ COMMIT ÚNICO (muito importante)
+        db.commit()
+
+    except Exception as e:
+        db.rollback()
+
+        raise Exception(
+            f"Erro na linha {idx} | "
+            f"PN: {getattr(linha, 'pn', None)} | "
+            f"Reference: {getattr(linha, 'referencia', None)} | "
+            f"Erro: {str(e)}"
+        )
 
     return {"status": "OK", "mensagem": "Rotina executada com sucesso!"}
