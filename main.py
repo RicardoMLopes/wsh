@@ -3,6 +3,7 @@ from connection.db_connection import Base, engine, SessionLocal
 from wsh.cadastro.products import products_rp
 from wsh.consulta.consultasgerais import consults_rp
 from wsh.consulta.products import consult_prod_rp
+from wsh.consulta.consultawhsmovementputaway import consult_mov_putaway
 from wsh.listagem.listamovimento import listagem_rp
 from wsh.movimento.a020_a190 import a020_a190_rp
 from wsh.movimento.acompanhamento import acompanhamento_rp
@@ -27,6 +28,7 @@ app.include_router(products_rp, prefix="", tags=["products"])
 app.include_router(moviment_rp, prefix="", tags=["moviments"])
 app.include_router(consults_rp, prefix="", tags=["consults"])
 app.include_router(consult_prod_rp, prefix="", tags=["consult product"])
+app.include_router(consult_mov_putaway, prefix="", tags=["consulta movimento putaway"])
 app.include_router(acompanhamento_rp, prefix="", tags=["follow-up"])
 app.include_router(listagem_rp, prefix="", tags=["movement list"])
 app.include_router(produtividade_rp, prefix="", tags=["productivity"])
