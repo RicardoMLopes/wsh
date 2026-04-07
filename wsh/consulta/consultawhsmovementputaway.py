@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends, HTTPException, APIRouter
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import text
 import traceback
-import logging
+from datetime import datetime
 from connection.db_connection import Base, engine, SessionLocal
 
 consult_mov_putaway = APIRouter()
@@ -16,8 +16,8 @@ consult_mov_putaway = APIRouter()
 def movement_putaway(
     pn: Optional[str] = None,
     user_id: Optional[int] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
     id: Optional[int] = None,
     position: Optional[str] = None,
     reference: Optional[str] = None,
