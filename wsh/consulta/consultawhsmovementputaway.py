@@ -19,7 +19,8 @@ def movement_putaway(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     id: Optional[int] = None,
-    position: Optional[str] = None
+    position: Optional[str] = None,
+    reference: Optional[str] = None,
 ):
     db = SessionLocal()
     try:
@@ -39,6 +40,10 @@ def movement_putaway(
         if pn:
             base_sql += " AND A.pn = :pn"
             params["pn"] = pn
+
+        if reference:
+            base_sql += " AND A.reference = :reference"
+            params["reference"] = reference
 
         if position:
             base_sql += " AND A.position LIKE :position"
