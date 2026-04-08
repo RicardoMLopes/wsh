@@ -90,7 +90,7 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
             consulta = text("""
                 SELECT *
                 FROM whsproductsputaway
-                WHERE Reference = :reference
+                WHERE TRIM(Reference) = :reference
                   AND Waybill = :waybill
                   AND PN = :pn
                   AND situationregistration <> 'E'
@@ -98,7 +98,7 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
             """)
 
             result = db.execute(consulta, {
-                "reference": linha.referencia,
+                "reference": linha.referencia.strip(),
                 "waybill": linha.waybill,
                 "pn": linha.pn
             }).mappings().first()
@@ -122,7 +122,7 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
                             inputtype = :inputtype,
                             situationregistration = 'A',
                             dateregistration = NOW()
-                        WHERE Reference = :reference
+                        WHERE TRIM(Reference) = :reference
                           AND Waybill = :waybill
                           AND PN = :pn
                     """)
@@ -132,7 +132,7 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
                         "descricao": descricao,
                         "processlines": processlines,
                         "inputtype": inputtype,
-                        "reference": linha.referencia,
+                        "reference": linha.referencia.strip(),
                         "waybill": linha.waybill,
                         "pn": linha.pn
                     })
@@ -163,7 +163,7 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
                     "id": max_id,
                     "pn": linha.pn,
                     "descricao": descricao,
-                    "reference": linha.referencia,
+                    "reference": linha.referencia.strip(),
                     "qty": qty,
                     "waybill": linha.waybill,
                     "processlines": processlines,

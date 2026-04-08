@@ -98,10 +98,12 @@ def end_log(data: EndLogModel, db: Session = Depends(get_db)):
     sql = text("""
         UPDATE whsproductsputawaylog
         SET DateProcessEnd = NOW()
-        WHERE Reference = :ref AND Waybill = :way AND User_Id = :user
+        WHERE TRIM(Reference) = :ref AND 
+        TRIM(Waybill) = :way AND 
+        User_Id = :user
     """)
 
-    db.execute(sql, {"ref": data.ref, "way": data.way, "user": data.user_id})
+    db.execute(sql, {"ref": data.ref.strip(), "way": data.way.strip(), "user": data.user_id})
     db.commit()
     return {"updated": True}
 
@@ -142,10 +144,10 @@ def set_operator(data: SetOperatorModel, db: Session = Depends(get_db)):
     sql = text("""
         UPDATE whsproductsputaway
         SET operator_id = :op
-        WHERE Reference = :ref AND Waybill = :way
+        WHERE TRIM(Reference) = :ref AND Waybill = :way
     """)
 
-    db.execute(sql, {"op": data.operator_id, "ref": data.ref, "way": data.way})
+    db.execute(sql, {"op": data.operator_id, "ref": data.ref.strip(), "way": data.way})
     db.commit()
 
     return {"updated": True}
@@ -162,10 +164,10 @@ def finalize(data: FinalizeModel, db: Session = Depends(get_db)):
     sql = text("""
         UPDATE whsproductsputaway
         SET DateProcessEnd = NOW()
-        WHERE Reference = :ref AND Waybill = :way
+        WHERE TRIM(Reference) = :ref AND Waybill = :way
     """)
 
-    db.execute(sql, {"ref": data.ref, "way": data.way})
+    db.execute(sql, {"ref": data.ref.strip(), "way": data.way.strip() })
     db.commit()
 
     return {"finalized": True}
@@ -215,11 +217,11 @@ def operator_finish(data: OperatorFinishModel, db: Session = Depends(get_db)):
             sql = text("""
                 UPDATE whsproductsputaway
                 SET DateProcessEnd = NOW()
-                WHERE Reference = :ref
+                WHERE TRIM(Reference) = :ref
                 AND Waybill = :way
             """)
             logger.info(f"FINALIZAR PROCESSO: {sql}")
-            db.execute(sql, {"ref": data.reference, "way": data.waybill})
+            db.execute(sql, {"ref": data.reference.strip(), "way": data.waybill})
             db.commit()
 
             return {"updated": True, "finalized": True}
