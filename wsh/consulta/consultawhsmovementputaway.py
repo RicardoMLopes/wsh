@@ -20,6 +20,7 @@ def movement_putaway(
     id: Optional[int] = None,
     position: Optional[str] = None,
     reference: Optional[str] = None,
+    confirm: Optional[str] = None,
 ):
     db = SessionLocal()
     try:
@@ -48,9 +49,14 @@ def movement_putaway(
             base_sql += " AND A.position LIKE :position"
             params["position"] = f"%{position}%"
 
+        if confirm:
+            base_sql += " AND A.confirm = :confirm"
+            params["confirm"] = confirm
+
         if user_id:
             base_sql += " AND B.id = :user_id"
             params["user_id"] = user_id
+
 
         if date_from:
             base_sql += " AND A.dateregistration >= :date_from"
