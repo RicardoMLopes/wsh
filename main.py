@@ -5,6 +5,7 @@ from wsh.consulta.consultasgerais import consults_rp
 from wsh.consulta.products import consult_prod_rp
 from wsh.consulta.consultawhsmovementputaway import consult_mov_putaway
 from wsh.listagem.listamovimento import listagem_rp
+from wsh.middleware.log import MovLogMiddleware
 from wsh.movimento.a020_a190 import a020_a190_rp
 from wsh.movimento.acompanhamento import acompanhamento_rp
 from wsh.movimento.cancelarmovimento import cancelputway_rp
@@ -22,6 +23,7 @@ app = FastAPI()
 Base.metadata.create_all(bind=engine)
 
 
+app.add_middleware(MovLogMiddleware)
 app.include_router(login_rp, prefix="", tags=["Login"])
 app.include_router(user_rp, prefix="", tags=["users"])
 app.include_router(products_rp, prefix="", tags=["products"])

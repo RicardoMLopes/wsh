@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
+from fastapi import Request
 
 a020_a190_rp = APIRouter()
 
@@ -187,7 +188,7 @@ def to_decimal(valor):
 
 
 @a020_a190_rp.post("/importar/a020_a190")
-def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)):
+def importar_a020_a190(payload: ImportacaoRequest, request: Request, db: Session = Depends(get_db)):
 
     tipo = payload.tipo.upper()
     inputtype = "national" if tipo == "A020" else "transfer"
@@ -324,6 +325,12 @@ def importar_a020_a190(payload: ImportacaoRequest, db: Session = Depends(get_db)
             """), inserts)
 
         db.commit()
+
+        request.state.movlog = {
+            "inserts": len(inserts),
+            "updates": len(updates),
+            "total": len(linhas_validas)
+        }
 
     except Exception as e:
         db.rollback()
