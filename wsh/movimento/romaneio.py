@@ -1,4 +1,5 @@
 from fastapi import Depends, APIRouter, HTTPException
+from fastapi import Request
 from pydantic import BaseModel, Field
 from typing import Optional
 from typing import List
@@ -34,7 +35,7 @@ logger = logging.getLogger("romaneio")
 logging.basicConfig(level=logging.INFO)
 
 @moviment_rp.post("/romaneio")
-def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
+def putaway(items: List[PutawayItem], request: Request, db: Session = Depends(get_db)):
     conn = db.connection().connection
     cursor = conn.cursor()
 
@@ -104,6 +105,10 @@ def putaway(items: List[PutawayItem], db: Session = Depends(get_db)):
     conn.close()
     logger.info("Operação concluída com sucesso.")
 
+    request.state.movlog["inserts"] = inseridos
+    request.state.movlog["updates"] = atualizados
+    request.state.movlog["total"] = total
+
     return {
         "status": "ok",
         "total": total,
@@ -140,6 +145,7 @@ def atualiza_posicao(db: Session = Depends(get_db)):
     conn.commit()
     cursor.close()
     conn.close()
+
 
     return {
         "status": "ok",
@@ -372,7 +378,7 @@ def processar_aurora071(
 
     try:
         # 🔹 Atualização GRN1
-        logger.info("➡️ Iniciando atualização GRN1...")
+        # logger.info("➡️ Iniciando atualização GRN1...")
         condicao = "" if update_geral else "AND (p.grn1='' OR p.grn1 IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
@@ -392,10 +398,10 @@ def processar_aurora071(
                 SET p.grn1 = a.TXIssuedate;
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn1")
-        logger.info("✅ Atualização GRN1 concluída.")
+        # logger.info("✅ Atualização GRN1 concluída.")
 
         # 🔹 Atualização GRN3
-        logger.info("➡️ Iniciando atualização GRN3...")
+        # logger.info("➡️ Iniciando atualização GRN3...")
         condicao = "" if update_geral else "AND (p.grn3='' OR p.grn3 IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
@@ -415,10 +421,10 @@ def processar_aurora071(
                 SET p.grn3 = a.Receiptdate;
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn3")
-        logger.info("✅ Atualização GRN3 concluída.")
+        # logger.info("✅ Atualização GRN3 concluída.")
 
         # 🔹 Atualização GRN
-        logger.info("➡️ Iniciando atualização GRN...")
+        # logger.info("➡️ Iniciando atualização GRN...")
         condicao = "" if update_geral else "AND (p.GRN='' OR p.GRN IS NULL)"
         sql_template = f"""
             UPDATE whsproductsputaway p
@@ -440,12 +446,12 @@ def processar_aurora071(
                 SET p.GRN = a.GRNNo;
         """
         executar_sql_em_lotes(cursor, conn, sql_template, resultados, "grn")
-        logger.info("✅ Atualização GRN concluída.")
+        # logger.info("✅ Atualização GRN concluída.")
 
         # 🔹 Atualizações de log
         if grn_log:
             for campo, coluna in [("grn1", "TXIssuedate"), ("grn3", "Receiptdate"), ("GRN", "GRNNo")]:
-                logger.info(f"➡️ Iniciando atualização de log {campo}...")
+                # logger.info(f"➡️ Iniciando atualização de log {campo}...")
                 condicao = "" if update_geral else f"AND (l.{campo}='' OR l.{campo} IS NULL)"
                 sql_template = f"""
                     UPDATE whsproductsputawaylog l
@@ -465,12 +471,12 @@ def processar_aurora071(
                         SET l.{campo} = a.{coluna};
                 """
                 executar_sql_em_lotes(cursor, conn, sql_template, resultados, f"log_{campo}")
-                logger.info(f"✅ Atualização de log {campo} concluída.")
+                # logger.info(f"✅ Atualização de log {campo} concluída.")
 
-        logger.info("➡️ Limpando tabela whsaurora071...")
+        # logger.info("➡️ Limpando tabela whsaurora071...")
         cursor.execute("TRUNCATE TABLE whsaurora071;")
         conn.commit()
-        logger.info("✅ Tabela whsaurora071 limpa.")
+        # logger.info("✅ Tabela whsaurora071 limpa.")
 
     finally:
         cursor.close()
@@ -517,6 +523,7 @@ def executar_sql(cursor, conn, sql, resultados, chave, params=None):
 
 @moviment_rp.post("/auroraAAF/process")
 def processar_auroraAAF(
+    request: Request,
     update_geral: bool = False,
     aaf_log: bool = False,
     aaf_tela: bool = False,
@@ -670,6 +677,10 @@ def processar_auroraAAF(
     finally:
         cursor.close()
         conn.close()
+
+        request.state.movlog["inserts"] = 0
+        request.state.movlog["updates"] = len(refs_atualizadas)
+        request.state.movlog["total"] = len(linhas_fisicas_afetadas)
 
     # ==================================================
     # 4️⃣ RETORNO PARA O DELPHI
@@ -1109,6 +1120,7 @@ def br_to_us(date_str: str) -> str:
 @moviment_rp.post("/whsaurora071/import")
 def import_whsaurora071(
     itens: list[Aurora071Item],
+    request: Request,
     db: Session = Depends(get_db)
 ):
     try:
@@ -1152,6 +1164,10 @@ def import_whsaurora071(
             registros_salvos += 1
 
         db.commit()
+
+        request.state.movlog["inserts"] = registros_salvos
+        request.state.movlog["updates"] = 0
+        request.state.movlog["total"] = registros_salvos
 
         return {
             "status": "ok",
