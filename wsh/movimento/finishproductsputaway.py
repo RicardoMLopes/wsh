@@ -1,9 +1,10 @@
-from fastapi import Depends, APIRouter, HTTPException
+from fastapi import Depends, APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import Response
 from connection.db_connection import SessionLocal
 from sqlalchemy.orm import Session
 import logging
+import json
 from sqlalchemy import text
 
 
@@ -244,31 +245,90 @@ class PrintUpdate(BaseModel):
     printqty: int   # inteiro
     qrcode: str     # texto longo
 
-
 @putway_rp.post("/putaway/atualiza")
-def atualiza_status_impressao(dados: PrintUpdate, db: Session = Depends(get_db)):
+def atualiza_status_impressao(
+    dados: PrintUpdate,
+    request: Request,
+    db: Session = Depends(get_db)
+):
     try:
-        # Atualiza tabela principal
+
+        payload = dados.model_dump()
+
+        # ==================================================
+        # 1️⃣ UPDATE tabela principal
+        # ==================================================
         db.execute(text("""
             UPDATE whsproductsputaway
                SET print = :print
              WHERE id = :Id_whsprod
-        """), dados.model_dump())
+        """), payload)
 
-        # Atualiza tabela de log
+        # ==================================================
+        # 2️⃣ UPDATE tabela log
+        # ==================================================
         db.execute(text("""
             UPDATE whsproductsputawaylog
                SET print = :print,
                    printqty = :printqty,
                    qrcode = :qrcode
              WHERE id = :id
-        """), dados.model_dump())
+        """), payload)
 
         db.commit()
+
+        # ==================================================
+        # 🔥 MOVLOG (corrigido)
+        # ==================================================
+        if not hasattr(request.state, "movlog"):
+            request.state.movlog = {
+                "inserts": 0,
+                "updates": 0,
+                "total": 0,
+                "usuario": None,
+                "descricao": None,
+                "status": "SUCCESS"
+            }
+
+        request.state.movlog["usuario"] = request.headers.get("user")
+        request.state.movlog["status"] = "SUCCESS"
+
+        # 🔥 força gravação no middleware
+        request.state.movlog["total"] = 1
+
+        request.state.movlog["descricao"] = json.dumps({
+            "endpoint": request.url.path,
+            "method": request.method,
+            "params_recebidos": payload
+        }, ensure_ascii=False, default=str)
+
         return Response(status_code=200)
 
     except Exception as e:
         db.rollback()
+
+        if not hasattr(request.state, "movlog"):
+            request.state.movlog = {
+                "inserts": 0,
+                "updates": 0,
+                "total": 0,
+                "usuario": None,
+                "descricao": None,
+                "status": "SUCCESS"
+            }
+
+        request.state.movlog["status"] = "ERROR"
+
+        # 🔥 força gravação mesmo em erro
+        request.state.movlog["total"] = 1
+
+        request.state.movlog["descricao"] = json.dumps({
+            "endpoint": request.url.path,
+            "method": request.method,
+            "params_recebidos": dados.model_dump(),
+            "erro": str(e)
+        }, ensure_ascii=False, default=str)
+
         raise HTTPException(status_code=500, detail=str(e))
 
 
