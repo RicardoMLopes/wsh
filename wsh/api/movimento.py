@@ -73,3 +73,63 @@ def import_movimento(item: Putaway, db: Session = Depends(get_db)):
         print("Erro ao inserir:", e)
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+# ===================================================================================
+#                   Atualizar os dados da referência
+# ===================================================================================
+    class AtualizaMovimento(BaseModel):
+        reference: str
+        waybill: Optional[str] = None
+        processlines: Optional[int] = None
+        aaf: Optional[str] = None
+
+    @api_rp.post("/atualiza-movimento")
+    def atualiza_movimento(item: AtualizaMovimento,db: Session = Depends(get_db)):
+        try:
+            conn = db.connection().connection
+            cursor = conn.cursor()
+
+            logging.info("Atualizando movimento - Reference: %s",item.reference)
+
+            # Referência é obrigatória
+            if not item.reference:
+                raise HTTPException(status_code=400,detail="O campo reference é obrigatório")
+
+            cursor.execute("""
+                           UPDATE whsmovementputaway
+                           SET waybill      = %s,
+                               processlines = %s,
+                               aaf          = %s
+                           WHERE reference = %s
+                           """, (
+                               item.waybill,
+                               item.processlines,
+                               item.aaf,
+                               item.reference
+                           ))
+
+            # Verifica se encontrou o registro
+            if cursor.rowcount == 0:
+                conn.rollback()
+                conn.close()
+
+                raise HTTPException(status_code=404,detail=f"Referência '{item.reference}' não encontrada")
+
+            conn.commit()
+            conn.close()
+
+            return {"message": "Dados atualizados com sucesso", "reference": item.reference}
+
+        except HTTPException:
+            raise
+
+        except Exception as e:
+            print("Erro ao atualizar movimento:", e)
+            traceback.print_exc()
+
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(e))
